@@ -6,12 +6,12 @@ behavior it works around. The design contract and the findings of each test
 run are in [design.md](design.md). The facts about Ice and macOS that the
 design relies on are in [ice-internals-evidence.md](ice-internals-evidence.md).
 
-ice-rust is an independent implementation. It contains no Ice source code
-and no code translated from Ice. Ice is GPL-3.0; this project uses facts
-about how macOS behaves (API names, constants, observed window server
-behavior) gathered from Ice's source, the installed Ice binary and runtime
-observation, plus Apple documentation and the documentation and sources of
-the Rust crates it depends on.
+ice-rust is a Rust port of Ice and a derivative of it under GPL-3.0. Its
+features, UI text, settings keys and macOS mechanisms come from Ice, gathered
+from Ice's source, the installed Ice binary and runtime observation (see the
+README's "A Rust port of Ice"). The Rust code was written from that analysis,
+plus Apple documentation and the documentation and sources of the Rust crates
+it depends on, rather than translated line by line from Ice's Swift.
 
 "The development host" below is the machine ice-rust was built and tested
 on: macOS 26.3 on Apple Silicon, with four displays.
@@ -193,8 +193,8 @@ bars stretch.
   Recording grant applies after ice-rust relaunches, as the page says. The
   first click on Grant Access asks for the permission; later clicks open the
   matching System Settings pane.
-- About: version, what the app does, and the note that it is an
-  independent implementation not affiliated with Ice.
+- About: version, what the app does, and the note that it is a Rust port of
+  Ice, not affiliated with or endorsed by Ice.
 
 ## Moving items
 

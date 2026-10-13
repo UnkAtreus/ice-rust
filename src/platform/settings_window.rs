@@ -1143,7 +1143,7 @@ fn build_about(mtm: MainThreadMarker, page: &NSView, content_width: f64) {
         &NSColor::labelColor(),
     );
     centered(
-        "An independent implementation. Not affiliated with Ice or its developer.",
+        "A Rust port of Ice by Jordan Baird. Not affiliated with or endorsed by Ice.",
         220.0,
         18.0,
         12.0,

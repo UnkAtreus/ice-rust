@@ -1,0 +1,18 @@
+ice-rust
+Copyright (C) 2026 UnkAtreus
+
+ice-rust is a Rust port of Ice, a menu bar manager for macOS.
+Ice: https://github.com/jordanbaird/Ice
+Copyright (C) 2023-2025 Jordan Baird
+Ice is licensed under the GNU General Public License v3.0.
+
+This work is a modified version of Ice, as described in GPL-3.0 section 5.
+Changes, made in 2026: the program was rewritten in Rust against AppKit
+(objc2 crates) in place of Ice's Swift code. It reproduces a subset of Ice's
+features, its UI design and text, its settings keys and the macOS mechanisms
+it uses, worked out from Ice's source code and the installed Ice app (see
+docs/ice-internals-evidence.md). README.md lists which Ice features are and
+are not included.
+
+ice-rust is distributed under the GNU General Public License v3.0 only; see
+LICENSE. It is not affiliated with or endorsed by Ice or its developer.

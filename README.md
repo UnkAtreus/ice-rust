@@ -8,16 +8,28 @@ ice-rust is a menu bar manager for macOS, written in Rust. It hides menu bar
 items behind dividers and shows them on demand, in the menu bar itself or in
 a panel below it.
 
-## Inspired by Ice
+## A Rust port of Ice
 
-ice-rust is an independent Rust implementation inspired by
-[Ice](https://github.com/jordanbaird/Ice), the menu bar manager by Jordan
-Baird, licensed under GPL-3.0. Ice's behavior and the macOS mechanisms it
-relies on were studied from Ice's source and from the installed Ice binary,
-as recorded in [docs/ice-internals-evidence.md](docs/ice-internals-evidence.md).
-No Ice code was copied or translated. ice-rust is not affiliated with Ice or
-its developer. Ice is the mature, full-featured app; ice-rust covers a subset
-of it (see [Differences from Ice](#differences-from-ice)).
+ice-rust is a Rust port of [Ice](https://github.com/jordanbaird/Ice), the
+menu bar manager by Jordan Baird (Copyright (C) 2023-2025 Jordan Baird,
+GPL-3.0). It is a derivative of Ice and is distributed under the same license.
+
+What comes from Ice:
+
+- The features and how they behave: the divider, the Always-Hidden section,
+  the Ice Bar, auto-rehide and the drag-and-drop Menu Bar Layout.
+- The UI design and its text, including the Menu Bar Layout page, its section
+  names and its tip, and the name "Ice Bar".
+- The macOS mechanisms, constants and settings keys (`UseIceBar`,
+  `AutoRehide`, `RehideInterval`), worked out from Ice's source code and the
+  installed Ice app, as recorded in
+  [docs/ice-internals-evidence.md](docs/ice-internals-evidence.md).
+
+What is new: the code. ice-rust is written in Rust against AppKit through the
+objc2 crates, rebuilt from that analysis rather than translated line by line
+from Ice's Swift. It is not affiliated with or endorsed by Ice or its
+developer. Ice is the mature, full-featured app; ice-rust covers a subset of
+it (see [Differences from Ice](#differences-from-ice)).
 
 ## Features
 
@@ -345,14 +357,15 @@ python3 scripts/make-icons.py assets/logo-source.png assets
 
 ## License
 
-ice-rust is licensed under the GNU General Public License v3.0 only
-(GPL-3.0-only). See [LICENSE](LICENSE).
+ice-rust is a derivative of Ice, Copyright (C) 2023-2025 Jordan Baird, and is
+licensed under the GNU General Public License v3.0 only (GPL-3.0-only), the
+license Ice uses. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Acknowledgements
 
 - [Ice](https://github.com/jordanbaird/Ice) by Jordan Baird, licensed under
-  GPL-3.0. ice-rust follows its behavior, and the evidence ledger documents
-  how it works.
+  GPL-3.0. ice-rust is a port of it, and the evidence ledger documents how it
+  works.
 - The [objc2](https://github.com/madsmtm/objc2) crates (`objc2`,
   `objc2-foundation`, `objc2-app-kit`, `objc2-core-foundation`,
   `objc2-core-graphics`, `block2`), which provide the Rust bindings to AppKit,

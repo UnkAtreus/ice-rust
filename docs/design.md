@@ -1,15 +1,18 @@
 # ice-rust design
 
-ice-rust is an independent Rust implementation of two Ice behaviors on macOS:
+ice-rust is a Rust port of Ice. This contract started with two Ice behaviors on macOS:
 hiding menu bar items behind a divider, and the Ice Bar panel that shows the
 hidden items under the menu bar. Mechanism facts come from the evidence ledger
 ([ice-internals-evidence.md](ice-internals-evidence.md)), which cites Ice
 0.11.13-dev.2 source, the installed binary, and passive runtime probes on
 macOS 26.3.
 
-Ice is GPL-3.0. This project reuses facts about how macOS behaves (API names,
-constants, window-server behavior). It does not translate Ice source. Do not
-copy Swift code or comments from Ice into this repository.
+Ice is GPL-3.0, and so is ice-rust, a derivative of it: its features, UI
+design and text, settings keys and mechanisms come from Ice. The rule used
+while writing the code: work from facts about how Ice and macOS behave (API
+names, constants, window-server behavior, the UI and its text) and write the
+Rust code from those facts; do not translate Ice's Swift line by line or copy
+its code comments.
 
 ## Scope (v1)
 
@@ -301,8 +304,8 @@ always-hidden divider sits left of the hidden divider, expands to the same
   - Permissions: Screen Recording and Accessibility status with a button that
     requests the permission or opens the matching System Settings pane;
     refresh every second while the page is visible.
-  - About: version, one line on what it does, and the note that it is an
-    independent implementation not affiliated with Ice.
+  - About: version, one line on what it does, and the note that it is a Rust
+    port of Ice, not affiliated with or endorsed by Ice.
 - No Hotkeys, Appearance, or Updates pages; those features do not exist.
 
 ### Menu Bar Layout pane
