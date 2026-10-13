@@ -181,6 +181,22 @@ missing permissions at launch.
 Quit Ice, or any other menu bar manager, first. Two managers that both hide
 items with expanded dividers conflict in the same menu bar.
 
+### Download
+
+1. Download `IceRust-<version>-arm64.zip` from
+   [Releases](https://github.com/UnkAtreus/ice-rust/releases) (Apple Silicon
+   only) and unzip it.
+2. Move `IceRust.app` to `/Applications`.
+3. Open it. The app has an ad-hoc signature and is not notarized, so macOS
+   blocks the first launch. Open System Settings > Privacy & Security and
+   click Open Anyway, or run
+   `xattr -dr com.apple.quarantine /Applications/IceRust.app` and open it
+   again.
+4. Grant Screen Recording and Accessibility when asked (see
+   [Requirements](#requirements)).
+
+### Build from source
+
 ```sh
 git clone https://github.com/UnkAtreus/ice-rust
 cd ice-rust
@@ -269,6 +285,49 @@ and runtime observations.
 - Use Ice Bar defaults to on. Ice defaults it to off.
 - An always-hidden divider that ends up right of the hidden divider is
   reported on stderr and left in place. Ice moves it back.
+
+## Performance
+
+ice-rust uses less memory than Ice. Measured on one Mac (macOS 26.3, Apple
+Silicon, four displays) in October 2026 with `footprint`, which reports the
+same physical footprint as the Memory column in Activity Monitor:
+
+| App | When | Footprint |
+|---|---|---|
+| Ice 0.11.13-dev.2 | 12 s after launch, Ice Bar off | 86 MB, plus 7.5 MB for its MenuBarItemService helper |
+| Ice 0.11.13-dev.2 | 1 min 42 s after launch | 78 MB, plus 7.4 MB for the helper |
+| ice-rust (current) | 2.5 h of everyday use as a menu bar app | 62 MB, one process |
+| ice-rust (current) | Settings open, after two moves | 70 MB |
+| ice-rust (first version, no Settings window) | 10 min, about five Ice Bar opens | 32 MB |
+
+Where the difference comes from:
+
+- **No image cache that grows.** ice-rust captures item images when the Ice
+  Bar or the Menu Bar Layout page opens. The Ice Bar drops its images when
+  it closes; the Layout page keeps only its latest snapshot (L7). Ice keeps
+  its images in a cache that never evicts entries. Ice users report
+  about 4 GB after long runtimes
+  ([#530](https://github.com/jordanbaird/Ice/issues/530)), and an open pull
+  request measured a 983 MB image cache after 15 days
+  ([#804](https://github.com/jordanbaird/Ice/pull/804)).
+- **One process.** On macOS 26 Ice runs a separate XPC helper to find which
+  app owns each item. ice-rust has no helper process.
+- **Fewer frameworks and windows.** No SwiftUI, Combine or Sparkle updater.
+  Ice keeps four settings windows alive offscreen from launch; ice-rust
+  creates its Settings window only when you open it.
+- **Captures cannot freeze the app.** Window captures run on a worker
+  thread with a 1 s limit (see Ice issue
+  [#777](https://github.com/jordanbaird/Ice/issues/777) for the freeze this
+  avoids).
+
+What these numbers do not cover:
+
+- Each row is a single run on one machine. ice-rust has no multi-day soak
+  test yet, so long-run growth is untested; the Ice long-run figures come
+  from Ice's issue tracker, not from this machine.
+- Closing Settings does not release its memory yet (L7, below), so
+  ice-rust stays near 70 MB after Settings has been open until you quit it.
+- The comparison covers memory only. CPU and energy use were not measured.
 
 ## Known limitations and open issues
 
