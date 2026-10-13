@@ -182,7 +182,7 @@ impl Mover {
         let Some((request, done)) = self.queue.borrow_mut().pop_front() else {
             return;
         };
-        if !permissions::check().post_events {
+        if !permissions::check().can_post_events() {
             done(Err(MoveError::NoPermission));
             self.start_next();
             return;

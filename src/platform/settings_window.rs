@@ -579,7 +579,7 @@ impl SettingsWindow {
         for (kind, row) in &self.permission_rows {
             let granted = match kind {
                 Permission::ScreenRecording => state.screen_recording,
-                Permission::Accessibility => state.post_events || state.accessibility,
+                Permission::Accessibility => state.can_post_events(),
             };
             if let Some(icon) = &row.granted_icon {
                 icon.setHidden(!granted);

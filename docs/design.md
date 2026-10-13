@@ -504,3 +504,29 @@ Deviations from the v1.2 scope above, and choices it leaves open.
 | L6 | Measured: 70 MB with Settings open after two moves; 69 MB after closing it (app back to UIElement). The v1.1 figure of 123 MB was dominated by graphics surfaces (50 MB), which measured 2.2 MB this time. | `footprint` |
 | L7 | Open: closing Settings does not release memory (CG image 16 MB and MALLOC_SMALL 24 MB stay). Drop the layout snapshot, tile images and window content on close, then re-measure. | `footprint` before and after close |
 | L8 | Observation, not an ice-rust defect: across test rounds Ice's own dividers land at stored distances from the right end, so when items to their right change width an Ice section boundary shifts by an item (this round a third-party item moved from Ice's Visible to Hidden); item order itself was unchanged. | local probe JSON before and after (not included) |
+
+## L9: move refused after a fresh Accessibility grant (2026-10-14)
+
+Reported by the user with the release build: the Permissions page showed
+Accessibility as granted, but Menu Bar Layout refused a move with
+"Accessibility permission is needed to move items".
+
+| Evidence | Observation |
+|---|---|
+| TCC (system database) | `kTCCServiceAccessibility` for `local.icerust.IceRust` allowed at 01:11:47; the running process started at 01:11:44. |
+| lldb, inside the running process | `CGPreflightPostEventAccess()` = 0, `AXIsProcessTrustedWithOptions(NULL)` = 1, `CGPreflightScreenCaptureAccess()` = 1. |
+| A new process of the same bundle (`open -n ... --args probe`) | post events, accessibility and screen recording all granted. |
+
+Root cause: `CGPreflightPostEventAccess` keeps the answer it had when the
+process started, while `AXIsProcessTrusted` is live. The Permissions page
+counted either grant, but the move engine and click-through required the
+post-event preflight, so the three disagreed until a relaunch.
+
+Fix: `PermissionState::can_post_events` (either grant) is the single
+predicate for the Permissions page, the move engine, click-through and the
+launch-time request. Ice treats Accessibility as its one required permission
+for moves and clicks and calls no post-event preflight (ledger section 7),
+which is the basis for counting a live Accessibility grant. Not yet verified live:
+a move in a process whose Accessibility grant arrived after launch; if the
+window server dropped such events, the move engine's placement check would
+report "not placed" instead of failing silently.

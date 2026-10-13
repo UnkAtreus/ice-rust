@@ -846,7 +846,7 @@ impl Controller {
         let section = self.bar_section.get();
         self.close_bar();
         self.reveal(section);
-        if !permissions::check().post_events {
+        if !permissions::check().can_post_events() {
             // CGEventPost would drop the click silently. The section stays
             // shown so the item can be clicked by hand.
             permissions::request_event_access();
@@ -1105,7 +1105,7 @@ pub fn run() {
     if !granted.screen_recording {
         permissions::request_screen_recording();
     }
-    if !granted.post_events || !granted.accessibility {
+    if !granted.can_post_events() {
         permissions::request_event_access();
     }
 

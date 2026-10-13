@@ -30,6 +30,17 @@ pub struct PermissionState {
     pub accessibility: bool,
 }
 
+impl PermissionState {
+    /// Whether synthetic clicks and moves can be posted to other apps.
+    /// `CGPreflightPostEventAccess` keeps the answer it had when the process
+    /// started (observed on macOS 26.3: 0 in a process launched three seconds
+    /// before the Accessibility grant, 1 in a new process), while
+    /// `AXIsProcessTrusted` is live, so either grant counts.
+    pub fn can_post_events(&self) -> bool {
+        self.post_events || self.accessibility
+    }
+}
+
 fn ax_trusted(prompt: bool) -> bool {
     if !prompt {
         // SAFETY: NULL options are documented as "no options", so no prompt.
@@ -63,4 +74,32 @@ pub fn request_event_access() -> bool {
     let post = CGRequestPostEventAccess();
     let ax = ax_trusted(true);
     post || ax
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(post_events: bool, accessibility: bool) -> PermissionState {
+        PermissionState {
+            screen_recording: true,
+            post_events,
+            accessibility,
+        }
+    }
+
+    #[test]
+    fn accessibility_granted_after_launch_allows_event_posting() {
+        // CGPreflightPostEventAccess keeps the value it had at launch, while
+        // AXIsProcessTrusted is live: a grant made after launch shows up
+        // only in `accessibility`.
+        assert!(state(false, true).can_post_events());
+    }
+
+    #[test]
+    fn either_grant_allows_event_posting() {
+        assert!(state(true, false).can_post_events());
+        assert!(state(true, true).can_post_events());
+        assert!(!state(false, false).can_post_events());
+    }
 }
