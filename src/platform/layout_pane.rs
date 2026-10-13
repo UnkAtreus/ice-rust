@@ -1,0 +1,1400 @@
+//! Menu Bar Layout pane: a snapshot of the real menu bar and the canvas
+//! that shows three section bars of item tiles and tracks drags.
+//!
+//! Each bar is a horizontal scroll view (v1.2) whose document view, a
+//! `BarStrip`, draws that section's tiles in document coordinates (see
+//! `bar_scroll`). The canvas draws the labels, the bar backgrounds and the
+//! message line under the scroll views, and a `DragLayer` over them draws
+//! the tile being dragged. The strips pass mouse events to the canvas,
+//! which converts the pointer into each bar's document coordinates for hit
+//! tests, insertion indices and the marker.
+//!
+//! The canvas only reports drops (item, section, insertion index); the
+//! Settings window turns them into moves and rebuilds the snapshot from the
+//! real menu bar afterwards.
+
+use std::cell::{OnceCell, RefCell};
+use std::collections::{HashMap, HashSet};
+use std::ffi::c_void;
+use std::ptr;
+use std::time::Duration;
+
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::{AnyObject, NSObjectProtocol};
+use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::{
+    NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSBezierPath,
+    NSBorderType, NSColor, NSCompositingOperation, NSEvent, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSImage, NSLineBreakMode, NSMutableParagraphStyle,
+    NSParagraphStyleAttributeName, NSResponder, NSScrollElasticity, NSScrollView,
+    NSScrollerKnobStyle, NSScrollerStyle, NSStringDrawing, NSToolTipTag, NSView,
+    NSViewToolTipOwner,
+};
+use objc2_core_graphics::CGImage;
+use objc2_foundation::{
+    NSArray, NSDictionary, NSObject, NSPoint, NSRect, NSSize, NSString, NSTimer,
+};
+
+use super::capture::{self, CaptureMethod, ItemImage};
+use super::timer;
+use super::ui::{Weight, font, rect, redraw_on_resize, srgb, tinted_symbol};
+use super::windows;
+use crate::arrange::{Anchors, BarModel, bar_at, clamp_insertion, marker_x};
+use crate::bar_scroll::{
+    StripLayout, autoscroll_offset, document_x, insertion_at, keep_right_distance, strip_layout,
+    visible_x,
+};
+use crate::chain::{DividerLookup, find_divider, find_titled, section_chains};
+use crate::geometry::menu_bar_display;
+use crate::image_check::prefers_dark_text;
+use crate::model::{ControlNames, Rect, WindowId, WindowRecord};
+use crate::sections::Section;
+
+/// Bar fill when the menu bar color cannot be sampled, per appearance.
+pub const FALLBACK_BAR_COLOR_DARK: [f64; 3] = [0.22, 0.22, 0.24];
+pub const FALLBACK_BAR_COLOR_LIGHT: [f64; 3] = [0.86, 0.86, 0.88];
+/// Space for a section label above its bar.
+const LABEL_HEIGHT: f64 = 22.0;
+/// Inset of the tiles from a bar's top and bottom, and of its scrolling
+/// strip from the bar's ends.
+const BAR_INSET: f64 = 6.0;
+/// Space between one bar and the next label.
+const BAR_GAP: f64 = 14.0;
+/// Space between tiles, and between a strip's ends and its outer tiles.
+const TILE_PADDING: f64 = 2.0;
+/// Vertical slack when deciding which bar the pointer is over.
+const BAR_SLACK: f64 = 12.0;
+/// A drag this close to a strip's left or right edge scrolls the strip.
+const AUTOSCROLL_EDGE: f64 = 24.0;
+/// Most a strip scrolls per auto-scroll tick, in points.
+const AUTOSCROLL_MAX_STEP: f64 = 8.0;
+/// Auto-scroll timer period.
+const AUTOSCROLL_TICK: Duration = Duration::from_millis(30);
+/// Points per line for scroll wheels without precise deltas.
+const LINE_SCROLL: f64 = 10.0;
+/// SF Symbol drawn on a tile without an image.
+const PLACEHOLDER_SYMBOL: &str = "questionmark.square.dashed";
+
+/// A tile's image and its size in points. No image draws a placeholder.
+pub struct TileImage {
+    pub image: Option<Retained<NSImage>>,
+    pub size: (f64, f64),
+}
+
+/// The real menu bar at one moment.
+pub struct LayoutSnapshot {
+    pub model: Option<BarModel>,
+    pub images: HashMap<WindowId, TileImage>,
+    pub bar_color: Option<[f64; 3]>,
+    pub menu_bar_height: f64,
+    /// Why the bars are empty, when they are.
+    pub notice: Option<String>,
+    /// Capture outcome per section: tiles with an image, placeholders, and
+    /// whether the capture timed out.
+    pub captures: Vec<(Section, usize, usize, bool)>,
+    /// Items whose capture timed out or found the capture gate busy.
+    pub stale: HashSet<WindowId>,
+    /// The color sample timed out or found the capture gate busy.
+    pub color_stale: bool,
+}
+
+impl LayoutSnapshot {
+    pub fn empty(notice: &str) -> Self {
+        Self {
+            model: None,
+            images: HashMap::new(),
+            bar_color: None,
+            menu_bar_height: 24.0,
+            notice: Some(notice.to_string()),
+            captures: Vec::new(),
+            stale: HashSet::new(),
+            color_stale: false,
+        }
+    }
+
+    pub fn timed_out(&self) -> bool {
+        self.captures.iter().any(|c| c.3)
+    }
+
+    /// Fills images that timed out with the ones `old` has for the same
+    /// windows, and the color likewise. A window id names one item window
+    /// for its whole life, so the earlier image still shows that item.
+    pub fn reuse_stale(&mut self, old: &LayoutSnapshot) {
+        for id in &self.stale {
+            if let Some(previous) = old.images.get(id)
+                && previous.image.is_some()
+            {
+                self.images.insert(
+                    *id,
+                    TileImage {
+                        image: previous.image.clone(),
+                        size: previous.size,
+                    },
+                );
+            }
+        }
+        if self.color_stale && self.bar_color.is_none() {
+            self.bar_color = old.bar_color;
+        }
+    }
+}
+
+fn tile_image(window: &WindowRecord, captured: &ItemImage) -> TileImage {
+    let usable = captured.image.as_deref().filter(|_| !captured.transparent);
+    match usable {
+        Some(cg) => {
+            let w = CGImage::width(Some(cg)) as f64 / captured.scale;
+            let h = CGImage::height(Some(cg)) as f64 / captured.scale;
+            let image = NSImage::initWithCGImage_size(NSImage::alloc(), cg, NSSize::new(w, h));
+            TileImage {
+                image: Some(image),
+                size: (w, h),
+            }
+        }
+        None => TileImage {
+            image: None,
+            size: (window.bounds.width, window.bounds.height),
+        },
+    }
+}
+
+/// Reads the menu bar through the control items named by `names`:
+/// window list, three sections, item images and the menu bar color.
+/// `icon_fallback` (CG space) stands in for the icon window when its title
+/// is unreadable.
+///
+/// Every capture goes through one gate, and a capture that times out keeps
+/// it closed for the ones after it. So the captures run in the order most
+/// likely to succeed: the off-screen hidden and always-hidden items first,
+/// then the on-screen visible items and the color sample, which timed out
+/// in `render-settings` on the development host.
+pub fn load_snapshot(names: &ControlNames, icon_fallback: Option<Rect>) -> LayoutSnapshot {
+    let all = windows::list_windows();
+    let hidden = match find_divider(&all, &names.hidden, &names.icon) {
+        DividerLookup::Found(d) => d,
+        DividerLookup::NotFound => {
+            return LayoutSnapshot::empty(&format!("{} not found", names.hidden));
+        }
+        DividerLookup::TitlesUnreadable => {
+            return LayoutSnapshot::empty("Screen Recording permission needed");
+        }
+    };
+    let always = match find_divider(&all, &names.always_hidden, &names.icon) {
+        DividerLookup::Found(d) => Some(d),
+        _ => None,
+    };
+    let icon = find_titled(&all, &names.icon).cloned();
+    let chains = section_chains(&all, &hidden, always.as_ref());
+    let anchors = Anchors {
+        icon: icon.as_ref().map(|w| w.id),
+        hidden_divider: hidden.id,
+        always_hidden_divider: always.as_ref().map(|d| d.id),
+    };
+    let model = BarModel::from_sections(&chains, names, anchors);
+
+    let displays = windows::displays();
+    let icon_rect = icon.as_ref().map(|w| w.bounds).or(icon_fallback);
+    let place = menu_bar_display(
+        &all,
+        &displays,
+        icon_rect.as_ref(),
+        Some(&hidden.bounds),
+        None,
+    );
+    let menu_bar_height = place.map_or(hidden.bounds.height, |p| p.menu_bar_height);
+
+    let mut images = HashMap::new();
+    let mut captures = Vec::new();
+    let mut stale = HashSet::new();
+    for (section, chain) in [
+        (Section::Hidden, &chains.hidden),
+        (Section::AlwaysHidden, &chains.always_hidden),
+        (Section::Visible, &chains.visible),
+    ] {
+        let tiles = model.ids(section);
+        let records: Vec<WindowRecord> = chain
+            .iter()
+            .filter(|w| tiles.contains(&w.id))
+            .cloned()
+            .collect();
+        if records.is_empty() {
+            continue;
+        }
+        let result = capture::capture_items_bounded(&records);
+        let shots = capture::images_or_placeholders(&records, result);
+        let timed_out = shots.iter().any(|s| s.method == CaptureMethod::TimedOut);
+        let mut with_image = 0;
+        for (window, shot) in records.iter().zip(&shots) {
+            let tile = tile_image(window, shot);
+            if tile.image.is_some() {
+                with_image += 1;
+            }
+            if shot.method == CaptureMethod::TimedOut {
+                stale.insert(window.id);
+            }
+            images.insert(window.id, tile);
+        }
+        captures.push((section, with_image, records.len() - with_image, timed_out));
+    }
+
+    let (bar_color, color_stale) = match place {
+        Some(p) => match capture::menu_bar_color(&all, &p.display.bounds, p.menu_bar_height) {
+            Ok(color) => (color, false),
+            Err(_) => (None, true),
+        },
+        None => (None, false),
+    };
+
+    LayoutSnapshot {
+        model: Some(model),
+        images,
+        bar_color,
+        menu_bar_height,
+        notice: None,
+        captures,
+        stale,
+        color_stale,
+    }
+}
+
+/// Called with the dragged item, the section it was dropped on, and the
+/// insertion index in that bar counted without the item.
+pub type DropHandler = Box<dyn Fn(WindowId, Section, usize)>;
+
+struct Drag {
+    id: WindowId,
+    /// Pointer offset inside the tile at mouse down.
+    grab: (f64, f64),
+    /// Canvas coordinates.
+    pointer: (f64, f64),
+    over: Option<(Section, usize)>,
+}
+
+pub struct CanvasState {
+    snapshot: LayoutSnapshot,
+    drag: Option<Drag>,
+    busy: bool,
+    /// Outcome of the last press or drop; stays until the next press.
+    message: Option<(String, bool)>,
+    /// Refresh status, shown while there is no message.
+    note: Option<String>,
+    /// Each bar's strip layout in `Section::ALL` order, in document
+    /// coordinates.
+    strips: [StripLayout; 3],
+    on_drop: Option<DropHandler>,
+}
+
+/// One bar's scroll view and the strip it scrolls.
+struct BarViews {
+    scroll: Retained<BarScrollView>,
+    strip: Retained<BarStrip>,
+}
+
+struct CanvasViews {
+    /// In `Section::ALL` order.
+    bars: Vec<BarViews>,
+    overlay: Retained<DragLayer>,
+}
+
+pub struct CanvasIvars {
+    state: RefCell<CanvasState>,
+    views: OnceCell<CanvasViews>,
+    autoscroll: RefCell<Option<Retained<NSTimer>>>,
+}
+
+/// One bar's geometry in canvas coordinates.
+struct BarGeometry {
+    section: Section,
+    label: Rect,
+    bar: Rect,
+    /// The scroll view's frame: the bar without its rounded ends.
+    strip: Rect,
+}
+
+/// The tile under a mouse down.
+struct Hit {
+    id: WindowId,
+    locked: bool,
+    name: String,
+    /// Tile origin in canvas coordinates.
+    origin: (f64, f64),
+}
+
+pub struct StripIvars {
+    section: Section,
+    canvas: Weak<LayoutCanvas>,
+}
+
+define_class!(
+    // SAFETY: NSView has no subclassing requirements beyond using its
+    // designated initializer, which `BarStrip::new` does. No Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = StripIvars]
+    pub struct BarStrip;
+
+    // SAFETY: argument and return types match NSView's declarations:
+    // isFlipped and mouseDownCanMoveWindow -> BOOL, acceptsFirstMouse:
+    // (NSEvent *) -> BOOL, drawRect: (NSRect) -> void, mouse and scroll
+    // handlers (NSEvent *) -> void.
+    impl BarStrip {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseDownCanMoveWindow))]
+        fn mouse_down_can_move_window(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            if let Some(canvas) = self.ivars().canvas.load() {
+                canvas.draw_strip(self.ivars().section, self.bounds().size.height);
+            }
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            if let Some(canvas) = self.ivars().canvas.load() {
+                canvas.press(canvas.local(event));
+            }
+        }
+
+        #[unsafe(method(mouseDragged:))]
+        fn mouse_dragged(&self, event: &NSEvent) {
+            if let Some(canvas) = self.ivars().canvas.load() {
+                canvas.track(canvas.local(event));
+            }
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, event: &NSEvent) {
+            if let Some(canvas) = self.ivars().canvas.load() {
+                canvas.release(canvas.local(event));
+            }
+        }
+
+        #[unsafe(method(scrollWheel:))]
+        fn scroll_wheel(&self, event: &NSEvent) {
+            let handled = self
+                .ivars()
+                .canvas
+                .load()
+                .is_some_and(|canvas| canvas.wheel(self.ivars().section, event));
+            if !handled {
+                // SAFETY: scrollWheel: takes an NSEvent and returns void;
+                // NSView's implementation passes it to the scroll view.
+                let _: () = unsafe { msg_send![super(self), scrollWheel: event] };
+            }
+        }
+    }
+
+    // SAFETY: the protocol's methods come from NSObject; none is overridden.
+    unsafe impl NSObjectProtocol for BarStrip {}
+
+    // SAFETY: view:stringForToolTip:point:userData: takes an NSView, an
+    // NSToolTipTag, an NSPoint and a void pointer and returns an NSString,
+    // as NSViewToolTipOwner declares. The user data is never read.
+    unsafe impl NSViewToolTipOwner for BarStrip {
+        #[unsafe(method_id(view:stringForToolTip:point:userData:))]
+        fn tool_tip(
+            &self,
+            _view: &NSView,
+            _tag: NSToolTipTag,
+            point: NSPoint,
+            _data: *mut c_void,
+        ) -> Retained<NSString> {
+            let name = self
+                .ivars()
+                .canvas
+                .load()
+                .and_then(|canvas| canvas.name_in_strip(self.ivars().section, (point.x, point.y)));
+            NSString::from_str(&name.unwrap_or_default())
+        }
+    }
+);
+
+impl BarStrip {
+    fn new(mtm: MainThreadMarker, section: Section, canvas: Weak<LayoutCanvas>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(StripIvars { section, canvas });
+        // SAFETY: initWithFrame: is NSView's designated initializer.
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
+define_class!(
+    // SAFETY: NSScrollView has no subclassing requirements beyond using its
+    // designated initializer, which `BarScrollView::new` does. No Drop impl.
+    #[unsafe(super(NSScrollView, NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    pub struct BarScrollView;
+
+    // SAFETY: setScrollerStyle: takes an NSScrollerStyle (NSInteger) and
+    // returns void, as NSScrollView declares.
+    impl BarScrollView {
+        /// AppKit sends every scroll view the new preferred style when it
+        /// changes, for example when a mouse connects while System Settings
+        /// shows scroll bars automatically. A legacy scroller would take its
+        /// height from the bar, so a bar always keeps the overlay style.
+        #[unsafe(method(setScrollerStyle:))]
+        fn set_scroller_style(&self, _style: NSScrollerStyle) {
+            // SAFETY: as above; NSScrollView's implementation applies the
+            // style to the scroll view and its scrollers.
+            let _: () =
+                unsafe { msg_send![super(self), setScrollerStyle: NSScrollerStyle::Overlay] };
+        }
+    }
+);
+
+impl BarScrollView {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        // SAFETY: initWithFrame: is NSScrollView's designated initializer.
+        unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
+    }
+}
+
+define_class!(
+    // SAFETY: NSView has no subclassing requirements beyond using its
+    // designated initializer, which `DragLayer::new` does. No Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = Weak<LayoutCanvas>]
+    pub struct DragLayer;
+
+    // SAFETY: isFlipped returns BOOL, hitTest: takes an NSPoint and returns
+    // an NSView or nil, drawRect: takes an NSRect, as NSView declares.
+    impl DragLayer {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        /// Never the target of a click: mouse events reach the bars below.
+        #[unsafe(method_id(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> Option<Retained<NSView>> {
+            None
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            if let Some(canvas) = self.ivars().load() {
+                canvas.draw_drag();
+            }
+        }
+    }
+);
+
+impl DragLayer {
+    fn new(mtm: MainThreadMarker, frame: NSRect, canvas: Weak<LayoutCanvas>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(canvas);
+        // SAFETY: initWithFrame: is NSView's designated initializer.
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+}
+
+define_class!(
+    // SAFETY: NSView has no subclassing requirements beyond using its
+    // designated initializer, which `LayoutCanvas::new` does. No Drop impl.
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = CanvasIvars]
+    pub struct LayoutCanvas;
+
+    // SAFETY: argument and return types match NSView's declarations:
+    // isFlipped and mouseDownCanMoveWindow -> BOOL, acceptsFirstMouse:
+    // (NSEvent *) -> BOOL, drawRect: (NSRect) -> void, mouse handlers
+    // (NSEvent *) -> void, resizeSubviewsWithOldSize: (NSSize) -> void.
+    impl LayoutCanvas {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(mouseDownCanMoveWindow))]
+        fn mouse_down_can_move_window(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            self.draw();
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, event: &NSEvent) {
+            self.press(self.local(event));
+        }
+
+        #[unsafe(method(mouseDragged:))]
+        fn mouse_dragged(&self, event: &NSEvent) {
+            self.track(self.local(event));
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, event: &NSEvent) {
+            self.release(self.local(event));
+        }
+
+        /// The window resized: the bars stretch with the canvas.
+        #[unsafe(method(resizeSubviewsWithOldSize:))]
+        fn resize_subviews(&self, old_size: NSSize) {
+            // SAFETY: resizeSubviewsWithOldSize: takes an NSSize and returns
+            // void; NSView's implementation applies the autoresizing masks.
+            let _: () = unsafe { msg_send![super(self), resizeSubviewsWithOldSize: old_size] };
+            self.relayout();
+        }
+    }
+);
+
+fn text_attributes(font: &NSFont, color: &NSColor) -> Retained<NSDictionary<NSString, AnyObject>> {
+    // SAFETY: the keys are immutable NSString constants exported by AppKit.
+    let (font_key, color_key, paragraph_key) = unsafe {
+        (
+            NSFontAttributeName,
+            NSForegroundColorAttributeName,
+            NSParagraphStyleAttributeName,
+        )
+    };
+    let paragraph = NSMutableParagraphStyle::new();
+    paragraph.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    let values: [&AnyObject; 3] = [font.as_ref(), color.as_ref(), paragraph.as_ref()];
+    NSDictionary::from_slices(&[font_key, color_key, paragraph_key], &values)
+}
+
+/// Draws one line of text in `frame`, cut off with an ellipsis when it
+/// does not fit.
+fn draw_text(text: &str, frame: &Rect, font: &NSFont, color: &NSColor) {
+    let attributes = text_attributes(font, color);
+    // SAFETY: the attributes map NSAttributedStringKey values to an NSFont,
+    // an NSColor and an NSParagraphStyle, the types AppKit expects.
+    unsafe {
+        NSString::from_str(text).drawInRect_withAttributes(ns(frame), Some(&attributes));
+    }
+}
+
+fn text_width(text: &str, font: &NSFont) -> f64 {
+    let attributes = text_attributes(font, &NSColor::labelColor());
+    // SAFETY: as in `draw_text`.
+    unsafe { NSString::from_str(text).sizeWithAttributes(Some(&attributes)) }.width
+}
+
+fn ns(r: &Rect) -> NSRect {
+    rect(r.x, r.y, r.width, r.height)
+}
+
+fn section_index(section: Section) -> usize {
+    Section::ALL
+        .iter()
+        .position(|&s| s == section)
+        .unwrap_or_default()
+}
+
+/// Tile sizes in points of one bar, left to right.
+fn tile_sizes(snapshot: &LayoutSnapshot, section: Section) -> Vec<(f64, f64)> {
+    snapshot
+        .model
+        .as_ref()
+        .map(|m| {
+            m.bar(section)
+                .iter()
+                .map(|t| {
+                    snapshot
+                        .images
+                        .get(&t.id)
+                        .map_or((t.bounds.width, t.bounds.height), |i| i.size)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn offset_of(bar: &BarViews) -> f64 {
+    bar.scroll.contentView().bounds().origin.x
+}
+
+/// Scroller knob for a bar of the sampled `bar_color`: dark on a light bar,
+/// light on a dark one. Without a sample the bar takes the fallback fill of
+/// the window's appearance, and the default knob follows that appearance.
+fn knob_style(bar_color: Option<[f64; 3]>) -> NSScrollerKnobStyle {
+    match bar_color {
+        Some(color) if prefers_dark_text(color) => NSScrollerKnobStyle::Dark,
+        Some(_) => NSScrollerKnobStyle::Light,
+        None => NSScrollerKnobStyle::Default,
+    }
+}
+
+impl LayoutCanvas {
+    pub fn new(mtm: MainThreadMarker, frame: NSRect, snapshot: LayoutSnapshot) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(CanvasIvars {
+            state: RefCell::new(CanvasState {
+                snapshot,
+                drag: None,
+                busy: false,
+                message: None,
+                note: None,
+                strips: Default::default(),
+                on_drop: None,
+            }),
+            views: OnceCell::new(),
+            autoscroll: RefCell::new(None),
+        });
+        // SAFETY: initWithFrame: is NSView's designated initializer.
+        let canvas: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
+        redraw_on_resize(&canvas);
+        let weak = Weak::from_retained(&canvas);
+        let bars = Section::ALL
+            .iter()
+            .map(|&section| {
+                let scroll = BarScrollView::new(mtm);
+                scroll.setHasHorizontalScroller(true);
+                scroll.setHasVerticalScroller(false);
+                scroll.setAutohidesScrollers(true);
+                scroll.setScrollerStyle(NSScrollerStyle::Overlay);
+                scroll.setBorderType(NSBorderType::NoBorder);
+                scroll.setVerticalScrollElasticity(NSScrollElasticity::None);
+                // Transparent, so the bar color drawn by the canvas shows.
+                scroll.setDrawsBackground(false);
+                scroll.contentView().setDrawsBackground(false);
+                let strip = BarStrip::new(mtm, section, weak.clone());
+                scroll.setDocumentView(Some(&strip));
+                canvas.addSubview(&scroll);
+                BarViews { scroll, strip }
+            })
+            .collect();
+        let overlay = DragLayer::new(mtm, canvas.bounds(), weak);
+        canvas.addSubview(&overlay);
+        if canvas
+            .ivars()
+            .views
+            .set(CanvasViews { bars, overlay })
+            .is_err()
+        {
+            eprintln!("ice-rust: layout bars were set up twice");
+        }
+        canvas.relayout();
+        canvas
+    }
+
+    pub fn set_on_drop(&self, handler: DropHandler) {
+        self.ivars().state.borrow_mut().on_drop = Some(handler);
+    }
+
+    pub fn set_snapshot(&self, snapshot: LayoutSnapshot) {
+        {
+            let mut state = self.ivars().state.borrow_mut();
+            state.snapshot = snapshot;
+            state.drag = None;
+        }
+        self.stop_autoscroll();
+        self.relayout();
+        self.redraw();
+    }
+
+    pub fn with_snapshot<R>(&self, f: impl FnOnce(&LayoutSnapshot) -> R) -> R {
+        f(&self.ivars().state.borrow().snapshot)
+    }
+
+    pub fn set_busy(&self, busy: bool) {
+        self.ivars().state.borrow_mut().busy = busy;
+        self.setAlphaValue(if busy { 0.55 } else { 1.0 });
+        self.redraw();
+    }
+
+    pub fn is_idle(&self) -> bool {
+        let state = self.ivars().state.borrow();
+        !state.busy && state.drag.is_none()
+    }
+
+    /// Shows `text` under the bars until the next press; `error` draws it
+    /// in red.
+    pub fn set_message(&self, text: Option<String>, error: bool) {
+        self.ivars().state.borrow_mut().message = text.map(|t| (t, error));
+        self.setNeedsDisplay(true);
+    }
+
+    /// Shows `text` under the bars while there is no message.
+    pub fn set_note(&self, text: Option<String>) {
+        self.ivars().state.borrow_mut().note = text;
+        self.setNeedsDisplay(true);
+    }
+
+    /// Removes the tooltip rectangles, whose owners are the strips.
+    pub fn clear_tool_tips(&self) {
+        for bar in self.bars() {
+            bar.strip.removeAllToolTips();
+        }
+    }
+
+    /// Each bar's scroll offset and the offset that shows its right end, in
+    /// `Section::ALL` order.
+    pub fn scroll_positions(&self) -> Vec<(Section, f64, f64)> {
+        let state = self.ivars().state.borrow();
+        Section::ALL
+            .iter()
+            .zip(self.bars())
+            .zip(&state.strips)
+            .map(|((&section, bar), strip)| (section, offset_of(bar), strip.max_offset))
+            .collect()
+    }
+
+    fn bars(&self) -> &[BarViews] {
+        self.ivars().views.get().map_or(&[], |v| v.bars.as_slice())
+    }
+
+    fn local(&self, event: &NSEvent) -> (f64, f64) {
+        let p: NSPoint = self.convertPoint_fromView(event.locationInWindow(), None);
+        (p.x, p.y)
+    }
+
+    /// The bars, top to bottom in `Section::ALL` order, for a canvas
+    /// `width` wide.
+    fn geometry(width: f64, menu_bar_height: f64) -> Vec<BarGeometry> {
+        let bar_height = menu_bar_height + 2.0 * BAR_INSET;
+        let mut y = 0.0;
+        Section::ALL
+            .iter()
+            .map(|&section| {
+                let label = Rect::new(2.0, y, width - 4.0, LABEL_HEIGHT);
+                let bar = Rect::new(0.0, y + LABEL_HEIGHT, width, bar_height);
+                y = bar.max_y() + BAR_GAP;
+                let strip = Rect::new(
+                    bar.x + BAR_INSET,
+                    bar.y,
+                    (bar.width - 2.0 * BAR_INSET).max(0.0),
+                    bar.height,
+                );
+                BarGeometry {
+                    section,
+                    label,
+                    bar,
+                    strip,
+                }
+            })
+            .collect()
+    }
+
+    fn current_geometry(&self, state: &CanvasState) -> Vec<BarGeometry> {
+        Self::geometry(self.bounds().size.width, state.snapshot.menu_bar_height)
+    }
+
+    /// Height the canvas needs for the bars and the message line.
+    pub fn content_height(menu_bar_height: f64) -> f64 {
+        3.0 * (LABEL_HEIGHT + menu_bar_height + 2.0 * BAR_INSET + BAR_GAP) + 34.0
+    }
+
+    /// Places the scroll views over the bars and lays out each strip for
+    /// the current snapshot and width. A bar keeps its distance from its
+    /// right end, so a bar shows its right end until the user scrolls it.
+    fn relayout(&self) {
+        let Some(views) = self.ivars().views.get() else {
+            return;
+        };
+        let (geometry, sizes, knob) = {
+            let state = self.ivars().state.borrow();
+            let sizes: Vec<Vec<(f64, f64)>> = Section::ALL
+                .iter()
+                .map(|&section| tile_sizes(&state.snapshot, section))
+                .collect();
+            (
+                self.current_geometry(&state),
+                sizes,
+                knob_style(state.snapshot.bar_color),
+            )
+        };
+        for (index, ((g, bar), sizes)) in geometry.iter().zip(&views.bars).zip(&sizes).enumerate() {
+            // Read before the frame changes: a clip view that grows clamps
+            // its origin against the old document width, and that clamp
+            // would count as a scroll away from the right end.
+            let previous = offset_of(bar);
+            bar.scroll.setFrame(ns(&g.strip));
+            bar.scroll.setScrollerKnobStyle(knob);
+            // The frame's height, not the clip view's, so a scroller can
+            // never shrink the tiles.
+            let visible_width = bar.scroll.contentSize().width;
+            let layout = strip_layout(
+                sizes,
+                visible_width,
+                g.strip.height,
+                BAR_INSET,
+                TILE_PADDING,
+            );
+            let old_max = self.ivars().state.borrow().strips[index].max_offset;
+            let offset = keep_right_distance(previous, old_max, layout.max_offset);
+            // A bar that fits does not bounce sideways.
+            bar.scroll
+                .setHorizontalScrollElasticity(if layout.max_offset > 0.0 {
+                    NSScrollElasticity::Automatic
+                } else {
+                    NSScrollElasticity::None
+                });
+            bar.strip
+                .setFrameSize(NSSize::new(layout.document_width, g.strip.height));
+            self.ivars().state.borrow_mut().strips[index] = layout;
+            self.scroll_bar(index, offset);
+            bar.strip.setNeedsDisplay(true);
+        }
+        views.overlay.setFrame(self.bounds());
+        self.update_tool_tips();
+    }
+
+    /// Scrolls bar `index` so `offset` is at its visible left edge.
+    fn scroll_bar(&self, index: usize, offset: f64) {
+        if let Some(bar) = self.bars().get(index) {
+            let clip = bar.scroll.contentView();
+            clip.scrollToPoint(NSPoint::new(offset, 0.0));
+            bar.scroll.reflectScrolledClipView(&clip);
+        }
+    }
+
+    fn redraw(&self) {
+        self.setNeedsDisplay(true);
+        if let Some(views) = self.ivars().views.get() {
+            for bar in &views.bars {
+                bar.strip.setNeedsDisplay(true);
+            }
+            views.overlay.setNeedsDisplay(true);
+        }
+    }
+
+    /// Slots of `section` with the dragged tile taken out, paired with
+    /// their index in the bar counted without it, in document coordinates.
+    fn slots_without(
+        state: &CanvasState,
+        section: Section,
+        dragged: WindowId,
+    ) -> Vec<(usize, Rect)> {
+        let Some(model) = &state.snapshot.model else {
+            return Vec::new();
+        };
+        let tiles = model.bar(section);
+        let dragged_at = tiles.iter().position(|t| t.id == dragged);
+        state.strips[section_index(section)]
+            .layout
+            .slots
+            .iter()
+            .filter(|s| tiles.get(s.index).is_some_and(|t| t.id != dragged))
+            .map(|s| {
+                let index = match dragged_at {
+                    Some(d) if s.index > d => s.index - 1,
+                    _ => s.index,
+                };
+                (index, s.frame)
+            })
+            .collect()
+    }
+
+    /// Bar fill when no color was sampled: light or dark like the window.
+    fn fallback_bar_color(&self) -> [f64; 3] {
+        // SAFETY: both names are immutable NSString constants exported by
+        // AppKit.
+        let (aqua, dark) = unsafe { (NSAppearanceNameAqua, NSAppearanceNameDarkAqua) };
+        let names = NSArray::from_slice(&[aqua, dark]);
+        let best = self
+            .effectiveAppearance()
+            .bestMatchFromAppearancesWithNames(&names);
+        if best.is_some_and(|name| name.isEqualToString(dark)) {
+            FALLBACK_BAR_COLOR_DARK
+        } else {
+            FALLBACK_BAR_COLOR_LIGHT
+        }
+    }
+
+    /// The bar fill and the color of text and placeholders on it.
+    fn bar_colors(&self, state: &CanvasState) -> (Retained<NSColor>, Retained<NSColor>) {
+        let color = state
+            .snapshot
+            .bar_color
+            .unwrap_or_else(|| self.fallback_bar_color());
+        let on_bar = if prefers_dark_text(color) {
+            NSColor::blackColor().colorWithAlphaComponent(0.7)
+        } else {
+            NSColor::whiteColor().colorWithAlphaComponent(0.8)
+        };
+        (srgb(color, 1.0), on_bar)
+    }
+
+    /// Labels, bar backgrounds, empty-bar notes and the message line. The
+    /// tiles are drawn by the strips on top.
+    fn draw(&self) {
+        let state = self.ivars().state.borrow();
+        let geometry = self.current_geometry(&state);
+        let (fill, on_bar) = self.bar_colors(&state);
+        let label_font = font(12.0, Weight::Semibold);
+        let body = font(12.0, Weight::Regular);
+
+        for g in &geometry {
+            draw_text(
+                g.section.label(),
+                &Rect::new(g.label.x, g.label.y + 3.0, g.label.width, 16.0),
+                &label_font,
+                &NSColor::secondaryLabelColor(),
+            );
+            let radius = (g.bar.height / 4.0).min(10.0);
+            let path =
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(ns(&g.bar), radius, radius);
+            fill.setFill();
+            path.fill();
+            NSColor::separatorColor().setStroke();
+            path.setLineWidth(1.0);
+            path.stroke();
+
+            let empty = state
+                .snapshot
+                .model
+                .as_ref()
+                .is_none_or(|m| m.bar(g.section).is_empty());
+            if empty {
+                let text = match (&state.snapshot.notice, &state.snapshot.model) {
+                    (Some(notice), _) => notice.clone(),
+                    (None, Some(m))
+                        if g.section == Section::AlwaysHidden
+                            && m.anchors.always_hidden_divider.is_none() =>
+                    {
+                        "Always-hidden divider not found".to_string()
+                    }
+                    _ => "No items".to_string(),
+                };
+                let w = text_width(&text, &body).min(g.bar.width - 16.0);
+                draw_text(
+                    &text,
+                    &Rect::new(g.bar.mid_x() - w / 2.0, g.bar.mid_y() - 8.0, w + 2.0, 16.0),
+                    &body,
+                    &on_bar,
+                );
+            }
+        }
+
+        let line = match (&state.message, &state.note) {
+            (Some((text, error)), _) => Some((text.as_str(), *error)),
+            (None, Some(note)) => Some((note.as_str(), false)),
+            (None, None) => None,
+        };
+        if let Some(last) = geometry.last()
+            && let Some((text, error)) = line
+        {
+            let color = if error {
+                NSColor::systemRedColor()
+            } else {
+                NSColor::secondaryLabelColor()
+            };
+            draw_text(
+                text,
+                &Rect::new(2.0, last.bar.max_y() + 8.0, last.bar.width - 4.0, 18.0),
+                &body,
+                &color,
+            );
+        }
+    }
+
+    /// One bar's tiles and, while a drag is over it, the insertion marker,
+    /// in the strip's document coordinates.
+    fn draw_strip(&self, section: Section, height: f64) {
+        let state = self.ivars().state.borrow();
+        let Some(model) = &state.snapshot.model else {
+            return;
+        };
+        let (_, on_bar) = self.bar_colors(&state);
+        let small = font(10.0, Weight::Regular);
+        let tiles = model.bar(section);
+        let strip = &state.strips[section_index(section)];
+        let dragged = state.drag.as_ref().map(|d| d.id);
+        for slot in &strip.layout.slots {
+            let Some(tile) = tiles.get(slot.index) else {
+                continue;
+            };
+            if Some(tile.id) == dragged {
+                continue;
+            }
+            let image = state.snapshot.images.get(&tile.id);
+            draw_tile(image, &tile.title, &slot.frame, 1.0, &small, &on_bar);
+        }
+
+        if let Some(drag) = &state.drag
+            && let Some((over, index)) = drag.over
+            && over == section
+        {
+            let slots = Self::slots_without(&state, section, drag.id);
+            let document = Rect::new(0.0, 0.0, strip.document_width, height);
+            let x = marker_x(&slots, index, &document, TILE_PADDING);
+            let marker = Rect::new(x - 1.0, 4.0, 2.0, (height - 8.0).max(0.0));
+            NSColor::controlAccentColor().setFill();
+            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(ns(&marker), 1.0, 1.0).fill();
+        }
+    }
+
+    /// The dragged tile under the pointer, in canvas coordinates.
+    fn draw_drag(&self) {
+        let state = self.ivars().state.borrow();
+        let Some(drag) = &state.drag else {
+            return;
+        };
+        let Some(tile) = state.snapshot.model.as_ref().and_then(|m| m.tile(drag.id)) else {
+            return;
+        };
+        let (fill, on_bar) = self.bar_colors(&state);
+        let image = state.snapshot.images.get(&drag.id);
+        let size = image.map_or((tile.bounds.width, tile.bounds.height), |i| i.size);
+        let frame = Rect::new(
+            drag.pointer.0 - drag.grab.0,
+            drag.pointer.1 - drag.grab.1,
+            size.0,
+            size.1,
+        );
+        let backing = Rect::new(
+            frame.x - 2.0,
+            frame.y - 2.0,
+            frame.width + 4.0,
+            frame.height + 4.0,
+        );
+        fill.colorWithAlphaComponent(0.85).setFill();
+        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(ns(&backing), 5.0, 5.0).fill();
+        let small = font(10.0, Weight::Regular);
+        draw_tile(image, &tile.title, &frame, 0.9, &small, &on_bar);
+    }
+
+    /// The tile under `point` (canvas coordinates), looked up in the
+    /// document coordinates of the bar it is over.
+    fn hit(&self, point: (f64, f64)) -> Option<Hit> {
+        let state = self.ivars().state.borrow();
+        let model = state.snapshot.model.as_ref()?;
+        let geometry = self.current_geometry(&state);
+        let index = geometry
+            .iter()
+            .position(|g| g.strip.contains(point.0, point.1))?;
+        let g = geometry.get(index)?;
+        let offset = offset_of(self.bars().get(index)?);
+        let x = document_x(point.0 - g.strip.x, offset);
+        let y = point.1 - g.strip.y;
+        let slot = state.strips[index]
+            .layout
+            .slots
+            .iter()
+            .find(|s| s.frame.contains(x, y))?;
+        let tile = model.bar(g.section).get(slot.index)?;
+        Some(Hit {
+            id: tile.id,
+            locked: tile.locked,
+            name: model.display_name(tile),
+            origin: (
+                g.strip.x + visible_x(slot.frame.x, offset),
+                g.strip.y + slot.frame.y,
+            ),
+        })
+    }
+
+    /// The name of the tile at `point` in the strip of `section`, for its
+    /// tooltip.
+    fn name_in_strip(&self, section: Section, point: (f64, f64)) -> Option<String> {
+        let state = self.ivars().state.borrow();
+        let model = state.snapshot.model.as_ref()?;
+        let slot = state.strips[section_index(section)]
+            .layout
+            .slots
+            .iter()
+            .find(|s| s.frame.contains(point.0, point.1))?;
+        let tile = model.bar(section).get(slot.index)?;
+        Some(model.display_name(tile))
+    }
+
+    /// One tooltip rectangle per tile, owned by its strip. The rectangles
+    /// are in document coordinates, so they scroll with the tiles.
+    fn update_tool_tips(&self) {
+        for (index, bar) in self.bars().iter().enumerate() {
+            bar.strip.removeAllToolTips();
+            let frames: Vec<Rect> = self.ivars().state.borrow().strips[index]
+                .layout
+                .slots
+                .iter()
+                .map(|s| s.frame)
+                .collect();
+            let owner: &AnyObject = &bar.strip;
+            for frame in frames {
+                // SAFETY: the owner is the strip, which implements
+                // NSViewToolTipOwner. The user data is null and never read.
+                // `clear_tool_tips` removes the rectangles when the window
+                // closes.
+                unsafe {
+                    bar.strip
+                        .addToolTipRect_owner_userData(ns(&frame), owner, ptr::null_mut());
+                }
+            }
+        }
+    }
+
+    /// A mouse wheel without precise deltas over a bar that scrolls turns
+    /// its vertical steps into horizontal scrolling. Returns false to let
+    /// the scroll view handle the event.
+    fn wheel(&self, section: Section, event: &NSEvent) -> bool {
+        if event.hasPreciseScrollingDeltas() {
+            return false;
+        }
+        let (dx, dy) = (event.scrollingDeltaX(), event.scrollingDeltaY());
+        if dx != 0.0 || dy == 0.0 {
+            return false;
+        }
+        let index = section_index(section);
+        let max = self.ivars().state.borrow().strips[index].max_offset;
+        let Some(bar) = self.bars().get(index) else {
+            return false;
+        };
+        if max <= 0.0 {
+            return false;
+        }
+        let offset = (offset_of(bar) - dy * LINE_SCROLL).clamp(0.0, max);
+        self.scroll_bar(index, offset);
+        true
+    }
+
+    fn press(&self, point: (f64, f64)) {
+        if self.ivars().state.borrow().busy {
+            return;
+        }
+        match self.hit(point) {
+            None => {}
+            Some(Hit {
+                locked: true, name, ..
+            }) => {
+                self.set_message(Some(format!("{name} cannot be moved")), false);
+            }
+            Some(Hit { id, origin, .. }) => {
+                self.ivars().state.borrow_mut().drag = Some(Drag {
+                    id,
+                    grab: (point.0 - origin.0, point.1 - origin.1),
+                    pointer: point,
+                    over: None,
+                });
+                self.set_message(None, false);
+                self.redraw();
+            }
+        }
+    }
+
+    /// Where a drop at `point` (canvas coordinates) would go: the bar under
+    /// it and the insertion index in that bar's document coordinates,
+    /// clamped like the drop rule.
+    fn over_at(&self, point: (f64, f64)) -> Option<(Section, usize)> {
+        let state = self.ivars().state.borrow();
+        let drag = state.drag.as_ref()?;
+        let model = state.snapshot.model.as_ref()?;
+        let geometry = self.current_geometry(&state);
+        let bars: Vec<(Section, Rect)> = geometry.iter().map(|g| (g.section, g.bar)).collect();
+        let section = bar_at(&bars, point.1, BAR_SLACK)?;
+        let index = section_index(section);
+        let g = geometry.get(index)?;
+        let offset = offset_of(self.bars().get(index)?);
+        let slots = Self::slots_without(&state, section, drag.id);
+        let at = insertion_at(&slots, point.0 - g.strip.x, offset);
+        Some((section, clamp_insertion(model, drag.id, section, at)))
+    }
+
+    fn track(&self, point: (f64, f64)) {
+        if self.ivars().state.borrow().drag.is_none() {
+            return;
+        }
+        if let Some(drag) = self.ivars().state.borrow_mut().drag.as_mut() {
+            drag.pointer = point;
+        }
+        let over = self.over_at(point);
+        if let Some(drag) = self.ivars().state.borrow_mut().drag.as_mut() {
+            drag.over = over;
+        }
+        self.update_autoscroll();
+        self.redraw();
+    }
+
+    /// The bar to scroll and its next offset while the dragged tile is near
+    /// the left or right edge of the bar under the pointer.
+    fn autoscroll_target(&self) -> Option<(usize, f64)> {
+        let state = self.ivars().state.borrow();
+        let drag = state.drag.as_ref()?;
+        let geometry = self.current_geometry(&state);
+        let bars: Vec<(Section, Rect)> = geometry.iter().map(|g| (g.section, g.bar)).collect();
+        let index = section_index(bar_at(&bars, drag.pointer.1, BAR_SLACK)?);
+        let g = geometry.get(index)?;
+        let offset = offset_of(self.bars().get(index)?);
+        let next = autoscroll_offset(
+            drag.pointer.0 - g.strip.x,
+            g.strip.width,
+            offset,
+            state.strips[index].max_offset,
+            AUTOSCROLL_EDGE,
+            AUTOSCROLL_MAX_STEP,
+        );
+        ((next - offset).abs() > f64::EPSILON).then_some((index, next))
+    }
+
+    /// Runs the auto-scroll timer while a bar should scroll, and stops it
+    /// otherwise. Pointer moves alone cannot scroll a bar while the pointer
+    /// rests near an edge.
+    fn update_autoscroll(&self) {
+        if self.autoscroll_target().is_none() {
+            self.stop_autoscroll();
+            return;
+        }
+        let mut slot = self.ivars().autoscroll.borrow_mut();
+        if slot.is_some() {
+            return;
+        }
+        let me = Weak::new(self);
+        *slot = Some(timer::schedule_common(
+            self.mtm(),
+            AUTOSCROLL_TICK,
+            true,
+            move |timer| match me.load() {
+                Some(canvas) => canvas.autoscroll_tick(),
+                None => timer.invalidate(),
+            },
+        ));
+    }
+
+    fn autoscroll_tick(&self) {
+        let Some((index, offset)) = self.autoscroll_target() else {
+            self.stop_autoscroll();
+            return;
+        };
+        self.scroll_bar(index, offset);
+        let pointer = self.ivars().state.borrow().drag.as_ref().map(|d| d.pointer);
+        if let Some(pointer) = pointer {
+            let over = self.over_at(pointer);
+            if let Some(drag) = self.ivars().state.borrow_mut().drag.as_mut() {
+                drag.over = over;
+            }
+        }
+        self.redraw();
+    }
+
+    fn stop_autoscroll(&self) {
+        if let Some(timer) = self.ivars().autoscroll.borrow_mut().take() {
+            timer.invalidate();
+        }
+    }
+
+    fn release(&self, point: (f64, f64)) {
+        self.track(point);
+        self.stop_autoscroll();
+        let drop = {
+            let mut state = self.ivars().state.borrow_mut();
+            state
+                .drag
+                .take()
+                .and_then(|d| d.over.map(|(section, index)| (d.id, section, index)))
+        };
+        self.redraw();
+        let Some((id, section, index)) = drop else {
+            return;
+        };
+        // Take the handler out while it runs, so it may call back into the
+        // canvas.
+        let handler = self.ivars().state.borrow_mut().on_drop.take();
+        if let Some(handler) = handler {
+            handler(id, section, index);
+            let mut state = self.ivars().state.borrow_mut();
+            if state.on_drop.is_none() {
+                state.on_drop = Some(handler);
+            }
+        }
+    }
+}
+
+fn draw_tile(
+    image: Option<&TileImage>,
+    title: &str,
+    frame: &Rect,
+    alpha: f64,
+    font: &NSFont,
+    text_color: &NSColor,
+) {
+    match image.and_then(|i| i.image.as_ref()) {
+        Some(image) => {
+            // SAFETY: a zero source rect draws the whole image; no hints.
+            unsafe {
+                image.drawInRect_fromRect_operation_fraction_respectFlipped_hints(
+                    ns(frame),
+                    NSRect::ZERO,
+                    NSCompositingOperation::SourceOver,
+                    alpha,
+                    true,
+                    None,
+                );
+            }
+        }
+        None => {
+            let inner = Rect::new(
+                frame.x + 1.0,
+                frame.y + 3.0,
+                (frame.width - 2.0).max(0.0),
+                (frame.height - 6.0).max(0.0),
+            );
+            text_color.colorWithAlphaComponent(0.18 * alpha).setFill();
+            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(ns(&inner), 4.0, 4.0).fill();
+            // A neutral symbol; the tooltip names the item. The title is
+            // the fallback when the symbol is missing.
+            let side = (inner.height - 4.0).clamp(8.0, 14.0);
+            match tinted_symbol(PLACEHOLDER_SYMBOL, side, text_color) {
+                Some(symbol) => {
+                    let size = symbol.size();
+                    let at = Rect::new(
+                        inner.mid_x() - size.width / 2.0,
+                        inner.mid_y() - size.height / 2.0,
+                        size.width,
+                        size.height,
+                    );
+                    // SAFETY: as above.
+                    unsafe {
+                        symbol.drawInRect_fromRect_operation_fraction_respectFlipped_hints(
+                            ns(&at),
+                            NSRect::ZERO,
+                            NSCompositingOperation::SourceOver,
+                            alpha,
+                            true,
+                            None,
+                        );
+                    }
+                }
+                None => draw_text(
+                    title,
+                    &Rect::new(
+                        inner.x + 2.0,
+                        inner.mid_y() - 6.5,
+                        (inner.width - 4.0).max(0.0),
+                        13.0,
+                    ),
+                    font,
+                    text_color,
+                ),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn knob_contrasts_with_the_sampled_bar() {
+        // The navy menu bar sampled on the development host.
+        assert_eq!(
+            knob_style(Some([0.070, 0.189, 0.328])),
+            NSScrollerKnobStyle::Light
+        );
+        assert_eq!(
+            knob_style(Some([0.95, 0.95, 0.95])),
+            NSScrollerKnobStyle::Dark
+        );
+        assert_eq!(knob_style(None), NSScrollerKnobStyle::Default);
+    }
+}

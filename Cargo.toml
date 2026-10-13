@@ -1,0 +1,28 @@
+[package]
+name = "ice-rust"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "macOS menu bar manager: hides menu bar items behind dividers and shows them in a panel below the menu bar (independent Rust implementation inspired by Ice)"
+license = "GPL-3.0-only"
+repository = "https://github.com/UnkAtreus/ice-rust"
+readme = "README.md"
+keywords = ["macos", "menu-bar", "menubar", "status-item", "objc2"]
+categories = ["os::macos-apis", "gui"]
+publish = false
+
+[lib]
+name = "ice_rust"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ice-rust"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+block2 = "0.6"
