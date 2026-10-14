@@ -1,5 +1,8 @@
 //! CLI entry. No arguments runs the menu bar app; `probe` runs the read-only
-//! verification harness; `render-settings` draws a Settings page offscreen.
+//! verification harness; `render-settings` draws a Settings page offscreen;
+//! the update commands live in `update_cli`.
+
+mod update_cli;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -15,6 +18,11 @@ usage:
   ice-rust render-settings --page <general|layout|permissions|about> --out <png>
                            [--width W --height H] [--divider-prefix <prefix>]
                            [--default-settings]
+  ice-rust check-update [--json]
+  ice-rust apply-update --app <IceRust.app> --zip <zip> --sig <sig> [--version V]
+  ice-rust update-keygen --out <private-key-file>
+  ice-rust update-sign --key <private-key-file> <zip>
+  ice-rust update-verify <zip>
   ice-rust --help
 
 probe is read-only: it lists windows, walks the hidden, always-hidden and
@@ -27,7 +35,14 @@ a PNG. It shows no window, creates no status items and posts no events. The
 General page shows the stored settings, or the defaults with
 --default-settings. The layout page reads the live menu bar through the dividers titled
 <prefix>Hidden and <prefix>AlwaysHidden; without --divider-prefix it tries
-IceRust.ControlItem. and then Ice.ControlItem.";
+IceRust.ControlItem. and then Ice.ControlItem.
+
+check-update reads the latest GitHub release once and reports whether it is
+newer. apply-update verifies the zip's Ed25519 signature with the key built
+into this binary, then installs it into the given bundle without relaunching.
+update-keygen writes a new private key (mode 600, never overwrites) and
+prints the public key to build in; update-sign writes <zip>.sig;
+update-verify checks <zip>.sig against the key built into this binary.";
 
 /// Page names `render-settings` accepts.
 const PAGES: [&str; 4] = ["general", "layout", "permissions", "about"];
@@ -39,6 +54,7 @@ enum Command {
     Gui,
     Probe(ProbeOptions),
     Render(RenderArgs),
+    Update(update_cli::UpdateCommand),
     Help,
 }
 
@@ -145,7 +161,10 @@ fn parse_args(args: &[String]) -> Result<Command, String> {
             Ok(Command::Probe(options))
         }
         "render-settings" => parse_render(rest),
-        other => Err(format!("unknown command: {other}")),
+        other => match update_cli::parse(other, rest) {
+            Some(parsed) => parsed.map(Command::Update),
+            None => Err(format!("unknown command: {other}")),
+        },
     }
 }
 
@@ -639,7 +658,19 @@ fn main() -> ExitCode {
         Command::Gui => run_gui(),
         Command::Probe(options) => run_probe(&options),
         Command::Render(args) => run_render(&args),
+        Command::Update(command) => run_update(&command),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn run_update(command: &update_cli::UpdateCommand) -> ExitCode {
+    update_cli::run::run(command)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_update(_command: &update_cli::UpdateCommand) -> ExitCode {
+    eprintln!("ice-rust: updates are available on macOS only");
+    ExitCode::FAILURE
 }
 
 #[cfg(target_os = "macos")]

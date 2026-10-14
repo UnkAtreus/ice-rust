@@ -530,3 +530,220 @@ which is the basis for counting a live Accessibility grant. Not yet verified liv
 a move in a process whose Accessibility grant arrived after launch; if the
 window server dropped such events, the move engine's placement check would
 report "not placed" instead of failing silently.
+
+## v1.3 scope: Launch at login and automatic updates
+
+Requested 2026-10-14. Decided: updater option 1. The user compared it with
+Sparkle (which Ice uses) and a notify-only check that links to the release
+page, then chose option 1: check GitHub Releases, ask, then download, verify
+an Ed25519 signature and install in place. The "Automatic updates" section
+below describes it.
+
+The change that implements v1.3 also updates README.md: the "Launch at
+login" and "Automatic updates" rows under Features > Other, the "Launch at
+login" Roadmap checkbox, and the sentence that says Settings has no Updates
+page. The Performance note "No SwiftUI, Combine or Sparkle updater" stays
+only if option 1 or the notify-only option is chosen.
+
+Naming: text that sends the user to macOS UI (Login Items, Privacy &
+Security, Finder) names the bundle, IceRust, because macOS lists it by
+`CFBundleName` and `CFBundleDisplayName` (`scripts/bundle.sh`). Text about
+the app itself keeps ice-rust, as the Settings window title and the About
+page do.
+
+### Launch at login
+
+- `SMAppService.mainApp` (macOS 13+, crate `objc2-service-management`):
+  `register`, `unregister`, `status`.
+- General page: a "Launch at login" switch that reflects `status` live:
+  `enabled` = on; `requiresApproval` = on with the note "Approve IceRust in
+  System Settings > General > Login Items" and a button that calls
+  `SMAppService.openSystemSettingsLoginItems()`; `notRegistered` = off;
+  `notFound` = off.
+- Only a bundled app can register. When the binary runs outside an `.app`
+  (for example `cargo run`), the switch is disabled with the note "Available
+  when ice-rust runs as IceRust.app". Errors from register/unregister show
+  inline on the page and on stderr; the switch then re-reads `status`.
+- Nothing is registered automatically; the default is off.
+
+### Automatic updates
+
+Feed and assets:
+- Feed: `https://api.github.com/repos/UnkAtreus/ice-rust/releases/latest`
+  (published releases only; drafts and pre-releases are excluded by the API).
+  For tests only, `ICE_RUST_UPDATE_FEED` may point at a local JSON file
+  (`file://`); production accepts `https://` only.
+- A release offers an update when its `tag_name` (`vMAJOR.MINOR.PATCH`) is a
+  higher semantic version than the running `CARGO_PKG_VERSION`, and it has
+  both assets `IceRust-<version>-arm64.zip` and
+  `IceRust-<version>-arm64.zip.sig`. Never offer a lower or equal version.
+- Signature: Ed25519 over the exact zip bytes; the `.sig` asset holds the
+  64-byte signature in standard base64 (one line). The public key is a
+  32-byte constant in the source. The private key lives only on the release
+  machine (`~/.config/ice-rust/update-signing.key`, mode 600), never in the
+  repository.
+
+Checking:
+- Setting "Automatically check for updates" on the General page, default on.
+- One pure function decides when an automatic check is due:
+  `update::check_due(now, launched_at, last_success, last_attempt,
+  enabled, running)`. All times are wall-clock (`SystemTime`). A check is
+  due when all of these hold:
+  - the setting is on and no check is running;
+  - `now` is at least 60 s after launch;
+  - `LastUpdateCheck` is missing, at least 24 h before `now`, or later than
+    `now` (the clock moved backwards; treat it as missing);
+  - no attempt in this process, successful or failed, started within the
+    last hour.
+  The first automatic check after a launch is therefore due at
+  max(launch + 60 s, LastUpdateCheck + 24 h), so relaunches (at login,
+  after an update) do not each cause a request.
+- Only a successful check writes `LastUpdateCheck` (seconds since the Unix
+  epoch). A failed check writes nothing, and the one-hour attempt limit
+  spaces out retries.
+- `check_due` runs 60 s after launch, then from a repeating one-hour timer,
+  and on `NSWorkspaceDidWakeNotification` (posted on the `NSWorkspace`
+  notification center). Run loop timers count only time the Mac is awake,
+  so a repeating 24 h timer would stretch to several days on a laptop that
+  sleeps every night; comparing wall-clock time every hour keeps the
+  interval close to 24 h. This is known run loop timer behavior, not
+  measured on this host.
+- "Check for Updates..." in the icon menu and a button on the About page
+  check now, whatever the setting, and report "ice-rust is up to date" or
+  the error. A successful manual check also writes `LastUpdateCheck`.
+- Network and parsing run on a worker thread; results return to the main
+  thread. Downloads use `/usr/bin/curl` with an argument vector (no shell),
+  `--fail --location --proto =https --max-filesize 50M --max-time 120`.
+- "Skip This Version" stores the version (`SkippedUpdateVersion`); automatic
+  checks do not offer it again; a manual check does.
+
+Offer and prompt:
+- An automatic check never opens a window or an alert on its own. When it
+  finds an offerable version, it adds "Install Update <new>..." to the icon
+  menu and a banner with the same action at the top of the General page.
+  Nothing else happens until the user acts.
+- The prompt opens only from a user action: that menu item, the banner,
+  "Check for Updates..." or the About page button. It opens Settings on the
+  About page through `open_settings`, which already switches to the regular
+  activation policy and activates on the next pass with the forced
+  fallback (L2), and shows the prompt as a sheet on that window
+  (`NSAlert.beginSheetModalForWindow:completionHandler:`).
+- Never call `runModal`. An app-modal session runs the main run loop in
+  `NSModalPanelRunLoopMode`, where the rehide ticker, the click-settle poll
+  and the mover poll stop firing, because `timer::schedule` fires in the
+  default mode only. A new timer that must keep running while a menu or a
+  sheet is up uses `timer::schedule_common`.
+- Prompt text: "ice-rust <new> is available (you have <current>)", the
+  release notes (plain text, at most 1500 characters), the permissions note
+  below, and buttons Install / Later / Skip This Version. When the install
+  precheck (Install step 1) fails, the prompt shows its message and
+  replaces Install with Open Release Page.
+- Permissions note. IceRust is signed ad hoc (`codesign --sign -` in
+  `scripts/bundle.sh`), so its designated requirement is the cdhash of one
+  build, and every new build stops matching the Screen Recording and
+  Accessibility grants. System Settings may still show IceRust switched on
+  while the grant no longer applies; that follows from the cdhash
+  requirement and was not reproduced on this host. The prompt and the
+  README say: "After updating, turn IceRust off and on again in Privacy &
+  Security > Screen Recording and in Privacy & Security > Accessibility, or
+  remove it with the minus button and add it again." This holds for every
+  update path (option 1, Sparkle, or a manual download after a notify-only
+  prompt) while builds are signed ad hoc. Developer ID signing is the only
+  change that keeps the grants across versions.
+- First launch of a new version: the app stores `LastLaunchedVersion`. When
+  the running version differs from it and `permissions::check()` reports
+  Screen Recording missing or `can_post_events()` false, the app opens
+  Settings on the Permissions page with the same instruction. The decision
+  is a pure function with tests.
+
+Install (`update::install`, also exposed for tests as
+`ice-rust apply-update --app <path> --zip <zip> --sig <sig>`, which installs
+into the given bundle path and does not relaunch):
+1. Precheck, before the prompt offers Install and again at the start of
+   `install`:
+   - refuse when the running app is not a bundle, or runs from an App
+     Translocation path (`/AppTranslocation/`): "Move IceRust.app to the
+     Applications folder to install updates";
+   - refuse when `access(2)` with `W_OK` fails on the bundle's parent
+     directory or on the bundle: "Updating needs write access to <dir>. Ask
+     an administrator to install ice-rust <new>, or move IceRust.app to a
+     folder you own." A standard account cannot write to `/Applications`
+     (`drwxrwxr-x root admin` on this host). The precheck is advisory; step
+     5 still handles a failed rename.
+2. Create a staging directory next to the bundle (same parent, named
+   `.IceRust.update.XXXXXX` by `mkdtemp`, mode 0700) and download the zip
+   and sig into it. Staging on the bundle's own volume keeps the step 5
+   rename from failing with `EXDEV` when IceRust.app lives on another
+   volume than `$TMPDIR` (`/private/var/folders`, on `/System/Volumes/Data`
+   on this host). Every exit path, success or failure, removes the staging
+   directory.
+3. Verify the Ed25519 signature over the zip bytes before anything else
+   touches the zip. Any failure stops the install.
+4. Extract with `/usr/bin/ditto -x -k` into the staging directory, then
+   require exactly one `IceRust.app` with bundle identifier
+   `local.icerust.IceRust` and `CFBundleShortVersionString` equal to the
+   offered version, and a valid signature (`codesign --verify --strict`).
+5. Swap with `rename(2)` inside the parent directory: rename the current
+   bundle to `<name>.app.previous`, then rename the new bundle from the
+   staging directory into place; if the second rename fails, rename the
+   previous bundle back and report the error.
+   A bundle folder the user cannot write (for example `/Applications` for a
+   non-admin account, which is root:admin 775) stops the install before the
+   swap with an error that names the folder; there is no admin prompt.
+6. Relaunch: start a detached `/bin/sh -c` helper that receives the pid and
+   the bundle path as positional arguments (never interpolated into the
+   script), waits for the pid to exit, then runs `open <path>`; then the app
+   terminates through `NSApplication.terminate`.
+7. On launch, a bundle that finds `<name>.app.previous` next to itself
+   deletes it, and removes any `.IceRust.update.*` directory next to it
+   that the current user owns (left by an interrupted install).
+
+Release tooling:
+- `ice-rust update-keygen --out <path>` writes a new private key file
+  (mode 600, refuses to overwrite) and prints only the public key in base64.
+- `ice-rust update-sign --key <path> <zip>` writes `<zip>.sig`.
+- `scripts/release.sh <version>`: bump nothing itself; check that Cargo.toml
+  has the version, build with `OUT_DIR=dist`, zip with ditto, write
+  `.sha256` and `.sig`, verify the signature with the embedded public key,
+  and print the `gh release create` command without running it.
+
+Verification:
+- Pure tests: version parsing and comparison, asset selection from a
+  fixture of the GitHub JSON, notes trimming, `check_due` (no
+  `LastUpdateCheck`; a recent check, so no request at launch + 60 s; a
+  stale check; a clock moved backwards; before launch + 60 s; setting off;
+  a check already running; a failed attempt within the last hour), skip
+  handling, the first-launch permissions decision, Ed25519 verify with a
+  test key (valid, tampered zip, wrong key, malformed base64),
+  translocation detection, helper arguments.
+- Tests on temporary directory trees: the write-access precheck on a
+  directory with mode 0555 (refused; skipped when the tests run as root),
+  staging created next to the bundle and removed on success and on each
+  failure, swap and rollback, cleanup of a stale staging directory.
+- `ice-rust check-update --json` performs one real read-only check.
+- An end-to-end install test on scratch copies only: a 0.0.0 test bundle is
+  updated from a locally signed zip with `apply-update`; the user's running
+  IceRust is never touched. Live GUI checks need the user.
+
+### v1.3 implementation notes (2026-10-14)
+
+Deviations and choices the spec left open:
+
+| Item | Implementation | Why |
+|---|---|---|
+| Where the zip is extracted | Downloads go to a private temporary folder; the verified bytes are written to a staging folder next to the bundle and extracted there. | The final move must be a rename on the same volume; extracting from bytes already in memory leaves no gap between verification and use. |
+| Extra command | `ice-rust update-verify <zip>` checks `<zip>.sig` with the compiled-in key; `scripts/release.sh` calls it. | The spec asked release.sh to verify with the embedded key; a build with the placeholder key fails here, so it cannot be released. |
+| Release zip | Holds `IceRust.app` only; LICENSE and NOTICE are inside the bundle's Resources. | The updater requires exactly one entry; the license still travels with every binary. |
+| Not-installable releases | A newer release without both signed assets, served without https, or over 50 MB is reported with a button to the release page. | Covers 0.1.0-style releases and mistakes in a release. |
+| Permission notice | Shown once per version, 5 s after launch, when Screen Recording or event posting is missing. | Ad-hoc signatures change the code identity on every update (TCC re-grant). |
+| Automatic check pacing | First check 60 s after launch, then due once 24 h have passed on the wall clock (polled hourly, because run loop timers stop during sleep), at most one automatic attempt per hour. | Sleep and failed attempts would otherwise skip or repeat checks. |
+| Non-admin accounts | Write access to the bundle and its folder is checked before Install; without it the prompt explains and links the release page. | No administrator prompt in this version. |
+
+Verified on scratch copies (debug build with a test key): install, tampered
+zip, wrong key, same version, extra zip entry, and a release build ignoring
+the test key. Verified with the release build and the real key: a signed
+0.0.1 test zip installed over a 0.0.0 copy, and a zip signed with the test
+key was refused. One read-only `check-update` against GitHub reported
+0.1.0 as current and up to date. Not yet verified live: the prompt, the
+relaunch, Launch at login registration and approval, and the permission
+notice, which need the GUI.

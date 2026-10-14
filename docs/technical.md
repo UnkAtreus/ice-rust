@@ -387,6 +387,10 @@ Stored in the process's standard user defaults:
 | `AutoRehide` | true | Hide a revealed section after the idle interval |
 | `RehideInterval` | 15 | Idle seconds before hiding (0 to 3600 stored; the Settings window offers 5 to 60) |
 | `AlwaysHiddenPlacementV2` | absent | Set once the v1.2 always-hidden placement migration has run (see below) |
+| `AutomaticallyCheckForUpdates` | true | Daily update checks (v1.3) |
+| `LastUpdateCheck` | absent | Seconds since 1970 of the last successful update check |
+| `SkippedUpdateVersion` | absent | Version that "Skip This Version" set; automatic checks do not offer it |
+| `LastLaunchedVersion` | absent | Version of the last launch; a change with a missing permission shows the re-grant notice once |
 
 Before creating its status items the app writes the AppKit keys
 `NSStatusItem Preferred Position <name>` (0 for the icon, 1 for the hidden
@@ -425,6 +429,41 @@ that would expand a divider right of the icon is refused: the sections stay
 shown and a message asks to Command-drag the icon back. The first hide runs
 500 ms after launch through the same check. An always-hidden divider right
 of the hidden divider is reported on stderr; hiding still proceeds.
+
+## Launch at login and updates (v1.3)
+
+Launch at login uses `SMAppService.mainApp` (`src/platform/login_item.rs`;
+status mapping and notes in `src/login_item.rs`). The switch is disabled
+when the binary does not run from an app bundle, and the General page
+re-reads the status every second while it is visible, so an approval in
+System Settings shows up without reopening the window.
+
+Updates are split the same way: `src/update.rs` holds the pure rules
+(versions, the GitHub feed, scheduling, Ed25519 verification, install
+checks, swap with rollback, the relaunch helper's arguments) with their
+tests; `src/platform/installer.rs` runs the blocking steps (curl, ditto,
+plutil, codesign, renames) by absolute path with argument vectors; and
+`src/platform/updater.rs` schedules checks, shows the prompts and drives the
+installer on worker threads, draining results on the main thread.
+
+Install order: download zip and `.sig` into a private temporary folder;
+read the zip into memory (50 MB limit) and verify the signature over those
+bytes; refuse an installed version that is equal or newer; write the same
+bytes into a staging folder next to the bundle (`.IceRust.update.XXXXXX`,
+same volume) and extract them there with `ditto`; require exactly one
+`IceRust.app` that is a real folder, has bundle identifier
+`local.icerust.IceRust`, the offered version and a valid code signature;
+remove a stale `IceRust.app.previous`; rename the bundle to
+`IceRust.app.previous` and the new bundle into place, renaming back if the
+second step fails; start `/bin/sh -c` with a constant script that waits for
+the old process to exit and runs `open` on the bundle (pid and path are
+positional arguments); terminate. The next launch removes the previous
+bundle and any stale staging folder.
+
+Debug builds accept two test overrides that release builds ignore:
+`ICE_RUST_UPDATE_FEED=file:///...` for a local feed and
+`ICE_RUST_UPDATE_TEST_KEY=<base64>` for a test public key. Release builds
+take the feed from `https://` URLs only and trust only `UPDATE_PUBLIC_KEY`.
 
 ## Window captures on macOS 26
 

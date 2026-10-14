@@ -1,6 +1,6 @@
 [package]
 name = "ice-rust"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "macOS menu bar manager: hides menu bar items behind dividers and shows them in a panel below the menu bar (a Rust port of Ice by Jordan Baird)"
@@ -26,3 +26,9 @@ objc2-app-kit = "0.3"
 objc2-core-foundation = "0.3"
 objc2-core-graphics = "0.3"
 block2 = "0.6"
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
+libc = "0.2"
+
+[dependencies]
+serde_json = "1"
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }

@@ -82,6 +82,12 @@ impl SettingsHost for RenderHost {
     }
 
     fn closed(&self) {}
+
+    fn check_for_updates(&self) {}
+
+    fn update_status_line(&self) -> String {
+        "Not checked for updates yet".into()
+    }
 }
 
 /// Renders `options.page` to `options.out`.

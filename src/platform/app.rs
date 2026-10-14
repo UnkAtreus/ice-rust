@@ -36,6 +36,7 @@ use super::permissions;
 use super::settings_window::{Page, SettingsHost, SettingsWindow};
 use super::status::{self, StatusItems};
 use super::timer;
+use super::updater::Updater;
 use super::windows;
 use crate::bar_layout::{layout, overflow_label, text_tile_size};
 use crate::chain::{DividerLookup, find_divider, find_titled, section_chains};
@@ -121,6 +122,13 @@ define_class!(
             }
         }
 
+        #[unsafe(method(checkForUpdates:))]
+        fn check_for_updates(&self, _sender: Option<&AnyObject>) {
+            if let Some(c) = self.controller() {
+                c.updater.check_now();
+            }
+        }
+
         #[unsafe(method(quit:))]
         fn quit(&self, _sender: Option<&AnyObject>) {
             if let Some(c) = self.controller() {
@@ -202,6 +210,18 @@ impl SettingsHost for Host {
             c.settings_closed();
         }
     }
+
+    fn check_for_updates(&self) {
+        if let Some(c) = self.0.upgrade() {
+            c.updater.check_now();
+        }
+    }
+
+    fn update_status_line(&self) -> String {
+        self.0
+            .upgrade()
+            .map_or_else(String::new, |c| c.updater.status_line())
+    }
 }
 
 struct Controller {
@@ -215,6 +235,7 @@ struct Controller {
     bar_section: Cell<Section>,
     rehide: RefCell<Rehide>,
     mover: Rc<Mover>,
+    updater: Rc<Updater>,
     settings_window: RefCell<Option<Rc<SettingsWindow>>>,
     /// The app that was in front when Settings opened; it gets focus back
     /// when the window closes.
@@ -267,6 +288,13 @@ fn main_menu(mtm: MainThreadMarker, target: &Target) -> Retained<NSMenu> {
         "Settings...",
         sel!(openSettings:),
         ",",
+        Some(target),
+    ));
+    app_menu.addItem(&menu_item(
+        mtm,
+        "Check for Updates...",
+        sel!(checkForUpdates:),
+        "",
         Some(target),
     ));
     app_menu.addItem(&NSMenuItem::separatorItem(mtm));
@@ -330,6 +358,13 @@ impl Controller {
             "",
             Some(target),
         ));
+        menu.addItem(&menu_item(
+            mtm,
+            "Check for Updates...",
+            sel!(checkForUpdates:),
+            "",
+            Some(target),
+        ));
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&menu_item(
             mtm,
@@ -342,6 +377,12 @@ impl Controller {
         Rc::new_cyclic(|me: &Weak<Controller>| {
             let host = Rc::new(Host(me.clone()));
             let mover = Mover::new(mtm, host.clone());
+            let settings_of = me.clone();
+            let updater = Updater::new(mtm, move || {
+                settings_of
+                    .upgrade()
+                    .is_some_and(|c| c.settings.borrow().auto_check_updates)
+            });
             Self {
                 mtm,
                 me: me.clone(),
@@ -353,6 +394,7 @@ impl Controller {
                 bar_section: Cell::new(Section::Hidden),
                 rehide: RefCell::new(rehide),
                 mover,
+                updater,
                 settings_window: RefCell::new(None),
                 previous_app: RefCell::new(None),
                 bar_closed: Cell::new(None),
@@ -390,6 +432,17 @@ impl Controller {
         );
         self.observe(&NSNotificationCenter::defaultCenter(), screens_changed);
         self.observe_termination();
+
+        // Keeps the About page's update status current while it is open.
+        let me = self.me.clone();
+        self.updater.set_on_change(move || {
+            if let Some(c) = me.upgrade()
+                && let Some(w) = &*c.settings_window.borrow()
+            {
+                w.refresh_update_status();
+            }
+        });
+        self.updater.start();
 
         // The items start with every section shown; hiding goes through the
         // order check like every other state change. The placement check

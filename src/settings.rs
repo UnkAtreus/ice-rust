@@ -8,6 +8,7 @@ use crate::model::REHIDE_INTERVAL;
 pub const KEY_USE_ICE_BAR: &str = "UseIceBar";
 pub const KEY_AUTO_REHIDE: &str = "AutoRehide";
 pub const KEY_REHIDE_INTERVAL: &str = "RehideInterval";
+pub const KEY_AUTO_CHECK_UPDATES: &str = "AutomaticallyCheckForUpdates";
 
 /// Longest accepted rehide interval, in seconds.
 pub const MAX_REHIDE_SECONDS: f64 = 3600.0;
@@ -53,6 +54,8 @@ pub struct Settings {
     pub use_ice_bar: bool,
     pub auto_rehide: bool,
     pub rehide_interval: Duration,
+    /// Check GitHub for a new version once a day (v1.3).
+    pub auto_check_updates: bool,
 }
 
 impl Default for Settings {
@@ -61,6 +64,7 @@ impl Default for Settings {
             use_ice_bar: true,
             auto_rehide: true,
             rehide_interval: REHIDE_INTERVAL,
+            auto_check_updates: true,
         }
     }
 }
@@ -81,6 +85,8 @@ impl Settings {
             use_ice_bar: get_bool(KEY_USE_ICE_BAR).unwrap_or(defaults.use_ice_bar),
             auto_rehide: get_bool(KEY_AUTO_REHIDE).unwrap_or(defaults.auto_rehide),
             rehide_interval,
+            auto_check_updates: get_bool(KEY_AUTO_CHECK_UPDATES)
+                .unwrap_or(defaults.auto_check_updates),
         }
     }
 }
@@ -186,7 +192,10 @@ pub fn ui_rehide_seconds(interval: Duration) -> f64 {
 mod store {
     use objc2_foundation::{NSNumber, NSString, NSUserDefaults};
 
-    use super::{KEY_AUTO_REHIDE, KEY_REHIDE_INTERVAL, KEY_USE_ICE_BAR, SeedValue, Settings};
+    use super::{
+        KEY_AUTO_CHECK_UPDATES, KEY_AUTO_REHIDE, KEY_REHIDE_INTERVAL, KEY_USE_ICE_BAR, SeedValue,
+        Settings,
+    };
 
     fn has_key(defaults: &NSUserDefaults, key: &str) -> bool {
         defaults.objectForKey(&NSString::from_str(key)).is_some()
@@ -209,6 +218,10 @@ mod store {
         defaults.setDouble_forKey(
             settings.rehide_interval.as_secs_f64(),
             &NSString::from_str(KEY_REHIDE_INTERVAL),
+        );
+        defaults.setBool_forKey(
+            settings.auto_check_updates,
+            &NSString::from_str(KEY_AUTO_CHECK_UPDATES),
         );
     }
 
@@ -243,10 +256,33 @@ mod store {
     pub fn remove_key(key: &str) {
         NSUserDefaults::standardUserDefaults().removeObjectForKey(&NSString::from_str(key));
     }
+
+    pub fn write_number(key: &str, value: f64) {
+        NSUserDefaults::standardUserDefaults().setDouble_forKey(value, &NSString::from_str(key));
+    }
+
+    pub fn read_string(key: &str) -> Option<String> {
+        NSUserDefaults::standardUserDefaults()
+            .stringForKey(&NSString::from_str(key))
+            .map(|s| s.to_string())
+    }
+
+    pub fn write_string(key: &str, value: &str) {
+        let string = NSString::from_str(value);
+        // SAFETY: NSString is a property list type, which is what
+        // NSUserDefaults accepts.
+        unsafe {
+            NSUserDefaults::standardUserDefaults()
+                .setObject_forKey(Some(&string), &NSString::from_str(key))
+        };
+    }
 }
 
 #[cfg(target_os = "macos")]
-pub use store::{key_exists, load, read_number, remove_key, save, write_flag, write_seed};
+pub use store::{
+    key_exists, load, read_number, read_string, remove_key, save, write_flag, write_number,
+    write_seed, write_string,
+};
 
 #[cfg(test)]
 mod tests {
@@ -270,6 +306,14 @@ mod tests {
         assert!(!s.use_ice_bar);
         assert!(!s.auto_rehide);
         assert_eq!(s.rehide_interval, Duration::from_secs_f64(7.5));
+    }
+
+    #[test]
+    fn update_checks_default_on_and_follow_the_stored_value() {
+        assert!(Settings::default().auto_check_updates);
+        let off: HashMap<&str, bool> = [(KEY_AUTO_CHECK_UPDATES, false)].into();
+        let s = Settings::from_lookup(|k| off.get(k).copied(), |_| None);
+        assert!(!s.auto_check_updates);
     }
 
     #[test]

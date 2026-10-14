@@ -50,6 +50,11 @@ it (see [Differences from Ice](#differences-from-ice)).
 - **Auto-rehide.** A revealed section hides again after an idle interval
   (15 s by default, 5 to 60 s in Settings) while the pointer is outside the
   menu bar and no menu or panel is open.
+- **Launch at login.** A switch on the General page registers IceRust.app as
+  a login item through macOS's `SMAppService`.
+- **Automatic updates.** ice-rust checks GitHub Releases once a day, asks
+  before installing, verifies the update's Ed25519 signature, replaces
+  itself and relaunches. See [Automatic updates](#automatic-updates).
 
 ## Features/Roadmap
 
@@ -110,8 +115,8 @@ and its menu.
 
 | Feature | Ice | ice-rust |
 |---|---|---|
-| Launch at login | Yes | No |
-| Automatic updates | Yes | No |
+| Launch at login | Yes | Yes |
+| Automatic updates | Yes | Yes |
 | Menu bar widgets | Roadmap | No |
 
 ### Only in ice-rust
@@ -137,7 +142,6 @@ Planned, in rough priority order. Nothing here is implemented yet.
 - [ ] Global hotkeys for the sections and the Ice Bar
 - [ ] Show hidden items on hover, on a click in empty menu bar space, and on scroll
 - [ ] Smart and focused-app rehide strategies
-- [ ] Launch at login
 - [ ] Horizontal scrolling in the Ice Bar instead of the "+N" tile
 - [ ] Search menu bar items
 
@@ -226,11 +230,46 @@ return.
 |---|---|
 | Click the icon | Shows or hides the hidden section. With Use Ice Bar on, opens or closes the Ice Bar with the hidden items. |
 | Option-click the icon | Shows or hides the always-hidden section; showing it shows everything. With Use Ice Bar on, opens the Ice Bar with the always-hidden items. |
-| Right-click or Control-click the icon | Opens the menu: Show/Hide Hidden Items, Show/Hide Always-Hidden Items, Use Ice Bar, Settings..., Arrange Menu Bar Items..., Quit ice-rust. |
+| Right-click or Control-click the icon | Opens the menu: Show/Hide Hidden Items, Show/Hide Always-Hidden Items, Use Ice Bar, Settings..., Arrange Menu Bar Items..., Check for Updates..., Quit ice-rust. |
 | Click an image in the Ice Bar | Closes the bar, reveals the item's section, waits up to 1 s for the item to reach the screen, and clicks it. |
 | Settings... (Command-comma while the menu is open) | Opens the Settings window: General, Menu Bar Layout, Permissions, About. |
+| Check for Updates... | Checks GitHub now, even with automatic checks off, and offers a newer version or says ice-rust is up to date. Also on the About page. |
 | Arrange Menu Bar Items... | Opens Settings on the Menu Bar Layout page. Drag a tile to a new place in any bar; ice-rust moves the real item and rebuilds the bars from the menu bar. |
 | Command-drag in the menu bar | Rearranges items with macOS's own drag. Keep the ice-rust icon right of both dividers; ice-rust refuses to hide while a divider sits right of the icon. |
+
+## Automatic updates
+
+Available from version 0.1.1. Version 0.1.0 has no updater: install 0.1.1
+by hand once, and later versions arrive through the app.
+
+- **When.** With "Automatically check for updates" on (the default), the
+  first check runs a minute after launch and then once a day. "Check for
+  Updates..." checks at any time. The check is one request to the GitHub
+  Releases API; nothing else is sent.
+- **What you see.** A newer version shows its release notes with Install,
+  Later and Skip This Version. Skipped versions are not offered again by
+  automatic checks; a manual check offers them.
+- **How it is verified.** Each release carries `IceRust-<version>-arm64.zip`
+  and a `.sig` file holding an Ed25519 signature over the zip. The public
+  key is built into the app; the private key never leaves the release
+  machine. ice-rust verifies the signature before it unpacks anything, then
+  checks that the zip holds only `IceRust.app` with the expected bundle
+  identifier and a higher version, and that its code signature is valid. A
+  failed check leaves the installed app untouched. Equal or older versions
+  are never installed.
+- **Installing.** The old bundle moves to `IceRust.app.previous`, the new
+  one takes its place, and ice-rust relaunches; the next launch deletes the
+  previous bundle. If the move fails, the old bundle goes back.
+- **Permissions after an update.** The app has an ad-hoc signature, so macOS
+  treats each version as a new app. After updating, turn IceRust off and on
+  again in Privacy & Security > Screen Recording and > Accessibility, or
+  remove it and add it again. ice-rust shows this once after an update when a
+  permission is missing.
+- **Limits.** Updating needs write access to the folder that holds
+  IceRust.app. A standard (non-admin) account cannot write `/Applications`,
+  so ice-rust reports that and links the release page instead; there is no
+  administrator prompt. An app opened from Downloads runs from a read-only
+  App Translocation copy; move it to Applications first.
 
 ## How it works
 
@@ -386,7 +425,7 @@ finding with its evidence.
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test        # 180 tests: 165 in the library, 15 in the binary
+cargo test        # 241 tests: 222 in the library, 19 in the binary
 ```
 
 The logic lives in pure modules with unit tests (`chain`, `arrange`,
@@ -405,6 +444,30 @@ cargo run --release -- render-settings --page <general|layout|permissions|about>
 
 `probe` posts no events, creates no status items and writes no defaults.
 `render-settings` orders no window on screen and moves nothing.
+
+Update commands:
+
+```sh
+cargo run --release -- check-update [--json]     # one read-only check against GitHub
+cargo run --release -- update-verify <zip>       # checks <zip>.sig with the built-in key
+cargo run --release -- apply-update --app <IceRust.app> --zip <zip> --sig <sig>
+```
+
+### Releasing
+
+1. Set the new version in `Cargo.toml` and commit.
+2. Run `scripts/release.sh <version>`. It builds `dist/IceRust.app`, zips it,
+   signs the zip with the private key at `~/.config/ice-rust/update-signing.key`
+   (`ICE_RUST_UPDATE_KEY` overrides the path), verifies the signature with the
+   key built into the new binary, writes the SHA-256 file, and prints the
+   `git tag` and `gh release create` commands to publish. It publishes nothing
+   itself.
+3. Keep a backup of the private key. Without it, installed copies cannot
+   accept new updates; a new key needs a manual update by every user.
+
+`ice-rust update-keygen --out <path>` makes a new key pair (the private key
+file is mode 600 and never overwritten) and prints the public key to put in
+`UPDATE_PUBLIC_KEY` in `src/update.rs`.
 
 `scripts/make-icons.py` rebuilds the app icon, the bundle icon and the menu
 bar glyphs under `assets/` from `assets/logo-source.png` (needs Pillow and

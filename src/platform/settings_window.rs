@@ -22,6 +22,7 @@ use objc2_foundation::{NSDictionary, NSObject, NSRect, NSSize, NSString, NSTimer
 
 use super::brand;
 use super::layout_pane::{LayoutCanvas, LayoutSnapshot};
+use super::login_item;
 use super::mover::{MoveCallback, MoveError, MoveRequest};
 use super::permissions;
 use super::timer;
@@ -30,6 +31,7 @@ use super::ui::{
     label, rect, symbol, symbol_view, wrapping_label,
 };
 use crate::arrange::{DropOutcome, drop_destination, model_matches};
+use crate::login_item as login;
 use crate::model::{LAYOUT_REFRESH, PERMISSIONS_REFRESH, WindowId};
 use crate::sections::Section;
 use crate::settings::{Settings, UI_REHIDE_MAX_SECONDS, UI_REHIDE_MIN_SECONDS, ui_rehide_seconds};
@@ -58,6 +60,10 @@ pub trait SettingsHost {
     fn request_move(&self, request: MoveRequest, done: MoveCallback);
     /// The window is closing.
     fn closed(&self);
+    /// "Check for Updates..." on the About page.
+    fn check_for_updates(&self);
+    /// The About page's update status line.
+    fn update_status_line(&self) -> String;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +229,10 @@ struct GeneralParts {
     auto_rehide: Retained<NSSwitch>,
     interval: Retained<NSSlider>,
     interval_value: Retained<NSTextField>,
+    login: Retained<NSSwitch>,
+    login_note: Retained<NSTextField>,
+    login_button: Retained<NSButton>,
+    auto_updates: Retained<NSSwitch>,
 }
 
 struct PermissionRow {
@@ -253,6 +263,7 @@ pub struct SettingsWindow {
     canvas: Retained<LayoutCanvas>,
     spinner: Retained<NSProgressIndicator>,
     permission_rows: Vec<(Permission, PermissionRow)>,
+    about_status: Retained<NSTextField>,
     /// Targets of the controls; controls do not retain their targets.
     _targets: Vec<Retained<ActionTarget>>,
     refresh: RefCell<Option<Retained<NSTimer>>>,
@@ -392,7 +403,7 @@ impl SettingsWindow {
 
             // About.
             let about_view = FlippedView::new(mtm, page_frame);
-            build_about(mtm, &about_view, content_width);
+            let about_status = build_about(mtm, &about_view, content_width, me, &mut targets);
 
             let pages = vec![
                 (Page::General, general_view),
@@ -439,6 +450,7 @@ impl SettingsWindow {
                 canvas,
                 spinner,
                 permission_rows,
+                about_status,
                 _targets: targets,
                 refresh: RefCell::new(None),
                 ticks: Cell::new(0),
@@ -469,7 +481,7 @@ impl SettingsWindow {
             Page::Layout => {}
             Page::Permissions => self.refresh_permissions(),
             Page::General => self.sync_general(),
-            Page::About => {}
+            Page::About => self.refresh_update_status(),
         }
     }
 
@@ -509,6 +521,8 @@ impl SettingsWindow {
         }
         match self.current.get() {
             Page::Permissions => self.refresh_permissions(),
+            // Approval in System Settings changes the login item's state.
+            Page::General => self.sync_login(),
             Page::Layout => {
                 let every = (LAYOUT_REFRESH.as_secs_f64() / PERMISSIONS_REFRESH.as_secs_f64())
                     .round()
@@ -546,6 +560,51 @@ impl SettingsWindow {
             .interval_value
             .setStringValue(&NSString::from_str(&seconds_text(seconds)));
         self.general.interval.setEnabled(s.auto_rehide);
+        self.general
+            .auto_updates
+            .setState(switch_state(s.auto_check_updates));
+        self.sync_login();
+    }
+
+    /// Shows the login item's state: switch, note and approval button.
+    fn sync_login(&self) {
+        let state = login_item::state();
+        self.general
+            .login
+            .setState(switch_state(login::switch_on(state)));
+        self.general.login.setEnabled(login::switch_enabled(state));
+        self.general
+            .login_note
+            .setStringValue(&NSString::from_str(login::note(state)));
+        self.general
+            .login_note
+            .setTextColor(Some(&NSColor::secondaryLabelColor()));
+        self.general
+            .login_button
+            .setHidden(!login::needs_approval_button(state));
+    }
+
+    /// The Launch at login switch moved: registers or unregisters, then
+    /// shows the state macOS reports, or the error.
+    fn login_changed(&self) {
+        let on = self.general.login.state() == NSControlStateValueOn;
+        let result = login_item::set_enabled(on);
+        self.sync_login();
+        if let Err(err) = result {
+            eprintln!("ice-rust: launch at login: {err}");
+            self.general
+                .login_note
+                .setStringValue(&NSString::from_str(&err));
+            self.general
+                .login_note
+                .setTextColor(Some(&NSColor::systemRedColor()));
+        }
+    }
+
+    /// Shows the updater's status on the About page.
+    pub fn refresh_update_status(&self) {
+        self.about_status
+            .setStringValue(&NSString::from_str(&self.host.update_status_line()));
     }
 
     /// Reads the controls into settings, saves and applies them. The
@@ -555,6 +614,7 @@ impl SettingsWindow {
         let mut s = self.host.settings();
         s.use_ice_bar = self.general.use_bar.state() == NSControlStateValueOn;
         s.auto_rehide = self.general.auto_rehide.state() == NSControlStateValueOn;
+        s.auto_check_updates = self.general.auto_updates.state() == NSControlStateValueOn;
         let seconds = if slider_moved {
             let seconds = self
                 .general
@@ -903,13 +963,85 @@ fn build_general(
         targets.push(target);
     }
 
+    // Launch at login and updates (v1.3).
+    let top = 8.0 + 3.0 * ROW + 16.0;
+    let system = RoundedBox::new(mtm, rect(MARGIN, top, width, 2.0 * ROW), BoxStyle::Group);
+    add(page, &system, Follow::Width);
+    add(
+        &system,
+        &label(
+            mtm,
+            "Launch at login",
+            rect(16.0, 11.0, text_width - 150.0, 17.0),
+            13.0,
+            Weight::Medium,
+            &NSColor::labelColor(),
+        ),
+        Follow::Width,
+    );
+    let login_note = label(
+        mtm,
+        "",
+        rect(16.0, 30.0, text_width - 150.0, 15.0),
+        11.0,
+        Weight::Regular,
+        &NSColor::secondaryLabelColor(),
+    );
+    add(&system, &login_note, Follow::Width);
+    // SAFETY: no target or action yet; both are set by `attach` below.
+    let login_button = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str("Open Login Items"),
+            None,
+            None,
+            mtm,
+        )
+    };
+    login_button.setFrame(rect(width - 206.0, 13.0, 140.0, 30.0));
+    login_button.setHidden(true);
+    add(&system, &login_button, Follow::Right);
+    let login = NSSwitch::initWithFrame(NSSwitch::alloc(mtm), rect(width - 58.0, 16.0, 42.0, 24.0));
+    add(&system, &login, Follow::Right);
+    separator(mtm, &system, ROW, width);
+
+    row_text(
+        mtm,
+        &system,
+        "Automatically check for updates",
+        "Check GitHub for a new version once a day",
+        16.0,
+        ROW + 11.0,
+        text_width,
+    );
+    let auto_updates = NSSwitch::initWithFrame(
+        NSSwitch::alloc(mtm),
+        rect(width - 58.0, ROW + 16.0, 42.0, 24.0),
+    );
+    auto_updates.setState(switch_state(settings.auto_check_updates));
+    add(&system, &auto_updates, Follow::Right);
+
+    let target = ActionTarget::new(mtm, changed(false));
+    target.attach(&auto_updates);
+    targets.push(target);
+    let me_login = me.clone();
+    let target = ActionTarget::new(mtm, move |_| {
+        if let Some(w) = me_login.upgrade() {
+            w.login_changed();
+        }
+    });
+    target.attach(&login);
+    targets.push(target);
+    let target = ActionTarget::new(mtm, |_| login_item::open_login_items());
+    target.attach(&login_button);
+    targets.push(target);
+
     add(
         page,
         &wrapping_label(
             mtm,
             "Click the ice-rust icon to show hidden items. Option-click it to show the \
              always-hidden items too. Right-click or Control-click it for the menu.",
-            rect(MARGIN + 4.0, 8.0 + 3.0 * ROW + 14.0, width - 8.0, 36.0),
+            rect(MARGIN + 4.0, top + 2.0 * ROW + 14.0, width - 8.0, 36.0),
             11.0,
             &NSColor::secondaryLabelColor(),
         ),
@@ -921,6 +1053,10 @@ fn build_general(
         auto_rehide,
         interval,
         interval_value,
+        login,
+        login_note,
+        login_button,
+        auto_updates,
     }
 }
 
@@ -1093,7 +1229,13 @@ fn build_permissions(
     out
 }
 
-fn build_about(mtm: MainThreadMarker, page: &NSView, content_width: f64) {
+fn build_about(
+    mtm: MainThreadMarker,
+    page: &NSView,
+    content_width: f64,
+    me: &Weak<SettingsWindow>,
+    targets: &mut Vec<Retained<ActionTarget>>,
+) -> Retained<NSTextField> {
     let center = |w: f64| (content_width - w) / 2.0;
     if let Some(image) = brand::app_icon() {
         let view = NSImageView::imageViewWithImage(&image, mtm);
@@ -1150,4 +1292,37 @@ fn build_about(mtm: MainThreadMarker, page: &NSView, content_width: f64) {
         Weight::Regular,
         &NSColor::secondaryLabelColor(),
     );
+
+    // Updates (v1.3): the status line and a manual check.
+    let status = label(
+        mtm,
+        "",
+        rect(MARGIN, 262.0, content_width - 2.0 * MARGIN, 18.0),
+        12.0,
+        Weight::Regular,
+        &NSColor::secondaryLabelColor(),
+    );
+    status.setAlignment(NSTextAlignment::Center);
+    add(page, &status, Follow::Width);
+    // SAFETY: no target or action yet; both are set by `attach` below.
+    let check = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str("Check for Updates..."),
+            None,
+            None,
+            mtm,
+        )
+    };
+    check.setFrame(rect(center(180.0), 288.0, 180.0, 30.0));
+    add(page, &check, Follow::Center);
+    let me = me.clone();
+    let target = ActionTarget::new(mtm, move |_| {
+        if let Some(w) = me.upgrade() {
+            w.host.check_for_updates();
+            w.refresh_update_status();
+        }
+    });
+    target.attach(&check);
+    targets.push(target);
+    status
 }
