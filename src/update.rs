@@ -220,7 +220,7 @@ pub fn parse_release(json: &str) -> Result<Release, FeedError> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Update {
     pub version: Version,
-    /// Trimmed plain text (`trim_notes`).
+    /// Plain, trimmed text (`plain_notes`, then `trim_notes`).
     pub notes: String,
     pub page_url: String,
     pub zip_url: String,
@@ -291,7 +291,7 @@ pub fn evaluate(current: Version, release: &Release) -> CheckOutcome {
     }
     CheckOutcome::Available(Update {
         version,
-        notes: trim_notes(&release.notes),
+        notes: trim_notes(&plain_notes(&release.notes)),
         page_url: release_page(&release.page_url),
         zip_url: zip_asset.url.clone(),
         sig_url: sig_asset.url.clone(),
@@ -302,6 +302,100 @@ pub fn evaluate(current: Version, release: &Release) -> CheckOutcome {
 /// version, a manual check offers it again.
 pub fn should_offer(version: Version, skipped: Option<Version>, manual: bool) -> bool {
     manual || skipped != Some(version)
+}
+
+/// Release notes written in Markdown, as plain text for the update alert
+/// (L11). Headings lose their `#` marks, list items start with a bullet,
+/// lines wrapped inside a paragraph or list item are joined, code fence
+/// lines are dropped (their content stays as is), and inline marks (`**`,
+/// `__`, backticks) and link targets are removed. Anything else passes
+/// through.
+pub fn plain_notes(markdown: &str) -> String {
+    let text = markdown.replace("\r\n", "\n").replace('\r', "\n");
+    let mut out: Vec<String> = Vec::new();
+    let mut block: Option<String> = None;
+    let mut in_fence = false;
+    let flush = |block: &mut Option<String>, out: &mut Vec<String>| {
+        if let Some(text) = block.take() {
+            out.push(text);
+        }
+    };
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with("```") || line.starts_with("~~~") {
+            flush(&mut block, &mut out);
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            out.push(raw.trim_end().to_string());
+            continue;
+        }
+        if line.is_empty() {
+            flush(&mut block, &mut out);
+            out.push(String::new());
+        } else if let Some(heading) = markdown_heading(line) {
+            flush(&mut block, &mut out);
+            out.push(plain_inline(heading));
+        } else if let Some(item) = markdown_list_item(line) {
+            flush(&mut block, &mut out);
+            block = Some(item);
+        } else {
+            let text = plain_inline(line);
+            match &mut block {
+                Some(current) => {
+                    current.push(' ');
+                    current.push_str(&text);
+                }
+                None => block = Some(text),
+            }
+        }
+    }
+    flush(&mut block, &mut out);
+    out.join("\n")
+}
+
+/// The text of an ATX heading (`#` to `######`, then a space).
+fn markdown_heading(line: &str) -> Option<&str> {
+    let level = line.chars().take_while(|c| *c == '#').count();
+    if !(1..=6).contains(&level) {
+        return None;
+    }
+    let rest = line[level..].strip_prefix(' ')?;
+    Some(rest.trim().trim_end_matches('#').trim_end())
+}
+
+/// A list item as "• text", or "N. text" for a numbered one.
+fn markdown_list_item(line: &str) -> Option<String> {
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(rest) = line.strip_prefix(marker) {
+            return Some(format!("\u{2022} {}", plain_inline(rest.trim_start())));
+        }
+    }
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    let rest = line[digits..].strip_prefix(". ")?;
+    (digits > 0).then(|| format!("{}. {}", &line[..digits], plain_inline(rest.trim_start())))
+}
+
+/// Inline Markdown as plain text: `**` and `__` and backticks removed,
+/// `[text](url)` and `![text](url)` reduced to the text.
+fn plain_inline(text: &str) -> String {
+    let text = text.replace("**", "").replace("__", "").replace('`', "");
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(open) = rest.find('[') {
+        let label_end = rest[open..].find("](").map(|i| open + i);
+        let link_end = label_end.and_then(|end| rest[end..].find(')').map(|i| end + i));
+        let (Some(label_end), Some(link_end)) = (label_end, link_end) else {
+            break;
+        };
+        let before = &rest[..open];
+        out.push_str(before.strip_suffix('!').unwrap_or(before));
+        out.push_str(&rest[open + 1..label_end]);
+        rest = &rest[link_end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Release notes as plain text of at most `NOTES_MAX_CHARS` characters:
@@ -985,7 +1079,7 @@ mod tests {
         assert!(update.sig_url.ends_with("/IceRust-0.2.0-arm64.zip.sig"));
         assert_eq!(
             update.notes,
-            "## Changes\n\n- Launch at login\n- Automatic updates"
+            "Changes\n\n\u{2022} Launch at login\n\u{2022} Automatic updates"
         );
     }
 
@@ -1095,6 +1189,27 @@ mod tests {
         assert!(should_offer(v(0, 2, 0), Some(v(0, 2, 0)), true));
         assert!(should_offer(v(0, 2, 1), Some(v(0, 2, 0)), false));
         assert!(should_offer(v(0, 2, 0), None, false));
+    }
+
+    #[test]
+    fn markdown_notes_become_plain_text() {
+        let notes = "## Fixed\r\n\r\n- **Memory after closing Settings (L7).** AppKit kept the\r\n  closed window until a later event.\r\n- Second item\r\n\r\n### Files\r\n\r\n1. `IceRust-0.1.2-arm64.zip`: the app\r\n\r\n```\r\nshasum -a 256 -c x.sha256\r\n```\r\n\r\nA port of [Ice](https://github.com/jordanbaird/Ice) by\r\nJordan Baird. ![logo](https://x/y.png)";
+        assert_eq!(
+            plain_notes(notes),
+            "Fixed\n\n\u{2022} Memory after closing Settings (L7). AppKit kept the closed window until a later event.\n\u{2022} Second item\n\nFiles\n\n1. IceRust-0.1.2-arm64.zip: the app\n\nshasum -a 256 -c x.sha256\n\nA port of Ice by Jordan Baird. logo"
+        );
+    }
+
+    #[test]
+    fn plain_notes_leave_other_text_alone() {
+        assert_eq!(plain_notes(""), "");
+        assert_eq!(plain_notes("#hashtag and 3.5 MB"), "#hashtag and 3.5 MB");
+        assert_eq!(plain_notes("[not a link] (x)"), "[not a link] (x)");
+        assert_eq!(plain_notes("a [b](c"), "a [b](c");
+        assert_eq!(plain_notes("##"), "##");
+        assert_eq!(plain_notes("* star item"), "\u{2022} star item");
+        // Fence content keeps its own lines and marks.
+        assert_eq!(plain_notes("```\n**x**\n  y\n```"), "**x**\n  y");
     }
 
     #[test]

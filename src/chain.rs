@@ -66,6 +66,37 @@ pub fn find_divider(
     }
 }
 
+/// `find_divider`, then, when no window carries the title although titles
+/// are readable, the layer-25 window at `frame`: the divider's own window
+/// frame from AppKit in CG space, which needs no title (issue #1).
+pub fn find_divider_or_frame(
+    windows: &[WindowRecord],
+    divider_title: &str,
+    icon_title: &str,
+    frame: Option<&Rect>,
+) -> DividerLookup {
+    match find_divider(windows, divider_title, icon_title) {
+        DividerLookup::NotFound => match frame.and_then(|f| find_by_frame(windows, f)) {
+            Some(window) => DividerLookup::Found(window.clone()),
+            None => DividerLookup::NotFound,
+        },
+        other => other,
+    }
+}
+
+/// Finds the layer-25 window whose bounds match `frame` within
+/// `ABUT_TOLERANCE` on every side.
+pub fn find_by_frame<'a>(windows: &'a [WindowRecord], frame: &Rect) -> Option<&'a WindowRecord> {
+    let close = |a: f64, b: f64| (a - b).abs() <= ABUT_TOLERANCE;
+    windows.iter().find(|w| {
+        w.layer == STATUS_LAYER
+            && close(w.bounds.x, frame.x)
+            && close(w.bounds.y, frame.y)
+            && close(w.bounds.width, frame.width)
+            && close(w.bounds.height, frame.height)
+    })
+}
+
 /// Finds the layer-25 window titled `title`.
 pub fn find_titled<'a>(windows: &'a [WindowRecord], title: &str) -> Option<&'a WindowRecord> {
     windows
@@ -849,6 +880,87 @@ mod tests {
             ),
             DividerLookup::TitlesUnreadable
         );
+    }
+
+    #[test]
+    fn divider_falls_back_to_its_frame_when_the_title_differs() {
+        // Issue #1: titles are readable, but no window carries the divider's
+        // autosave name. The divider's own frame still finds it.
+        let windows = vec![
+            w(1, -3034.0, 0.0, 5016.0, 30.0, "Item-1", false),
+            w(2, 1982.0, 0.0, 34.0, 30.0, "Item-0", true),
+            w(3, 2016.0, 0.0, 40.0, 30.0, "Clock", true),
+        ];
+        let frame = Rect::new(-3034.0, 0.0, 5016.0, 30.0);
+        match find_divider_or_frame(
+            &windows,
+            "IceRust.ControlItem.Hidden",
+            "IceRust.ControlItem.Visible",
+            Some(&frame),
+        ) {
+            DividerLookup::Found(d) => assert_eq!(d.id, 1),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(
+            find_divider_or_frame(
+                &windows,
+                "IceRust.ControlItem.Hidden",
+                "IceRust.ControlItem.Visible",
+                None,
+            ),
+            DividerLookup::NotFound
+        );
+        let elsewhere = Rect::new(-2000.0, 0.0, 5016.0, 30.0);
+        assert_eq!(
+            find_divider_or_frame(
+                &windows,
+                "IceRust.ControlItem.Hidden",
+                "IceRust.ControlItem.Visible",
+                Some(&elsewhere),
+            ),
+            DividerLookup::NotFound
+        );
+    }
+
+    #[test]
+    fn title_wins_over_frame_and_unreadable_titles_stay_unreadable() {
+        let windows = evidence();
+        let other = by_id(&windows, 54).bounds;
+        match find_divider_or_frame(
+            &windows,
+            "Ice.ControlItem.Hidden",
+            "Ice.ControlItem.Visible",
+            Some(&other),
+        ) {
+            DividerLookup::Found(d) => assert_eq!(d.id, 188),
+            other => panic!("unexpected {other:?}"),
+        }
+        let mut untitled = evidence();
+        for win in &mut untitled {
+            win.title = None;
+        }
+        let divider = by_id(&windows, 188).bounds;
+        assert_eq!(
+            find_divider_or_frame(
+                &untitled,
+                "Ice.ControlItem.Hidden",
+                "Ice.ControlItem.Visible",
+                Some(&divider),
+            ),
+            DividerLookup::TitlesUnreadable
+        );
+    }
+
+    #[test]
+    fn find_by_frame_allows_rounding_and_ignores_other_layers() {
+        let mut windows = vec![w(7, 100.0, 0.0, 34.0, 30.0, "x", true)];
+        assert_eq!(
+            find_by_frame(&windows, &Rect::new(100.5, 0.4, 34.0, 30.0)).map(|w| w.id),
+            Some(7)
+        );
+        assert!(find_by_frame(&windows, &Rect::new(103.0, 0.0, 34.0, 30.0)).is_none());
+        windows[0].layer = MAIN_MENU_LAYER;
+        assert!(find_by_frame(&windows, &Rect::new(100.0, 0.0, 34.0, 30.0)).is_none());
     }
 
     #[test]

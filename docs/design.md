@@ -821,5 +821,33 @@ regular app), and the divider shadow images below.
 
 | # | Finding | Status |
 |---|---|---|
-| L11 | The update alert shows the release notes as raw Markdown ("##" headings, "**" emphasis). | Open, cosmetic. |
+| L11 | The update alert shows the release notes as raw Markdown ("##" headings, "**" emphasis). | Fixed in 0.1.3 (see below). |
+
+## Issue #1 and L11 (2026-10-14)
+
+[Issue #1](https://github.com/UnkAtreus/ice-rust/issues/1) (external
+report, 0.1.0 era): Menu Bar Layout showed "IceRust.ControlItem.Hidden not
+found" in all three bars. It does not reproduce on the development host,
+where the divider windows carry their autosave names, and the report gives
+no macOS version or display setup. `find_divider` returns NotFound only
+when some status window titles are readable and none matches, so two
+causes fit: the divider's window has another title on the reporter's
+system, or the divider is not in the menu bar at all.
+
+| Change in 0.1.3 | Covers |
+|---|---|
+| Every lookup of a divider (layout page, Ice Bar sections, the icon order check, the always-hidden placement check) falls back to the layer-25 window whose bounds match the divider's own window frame from AppKit, converted to CG space (`chain::find_divider_or_frame`). | A title that differs from the autosave name. |
+| After creating the three status items, any item AppKit reports as not visible is made visible. The seeds fill only missing keys, so a stored `NSStatusItem Visible` false would otherwise keep a divider out of the menu bar. | A divider that is not in the menu bar. |
+| The layout message reads "IceRust.ControlItem.Hidden is not in the menu bar. Quit and reopen ice-rust". | What remains. |
+
+Verified: unit tests for the fallback (a different title, no frame, a
+frame elsewhere, the title winning over the frame, unreadable titles
+staying unreadable, rounding, other layers). On the development host the
+title path still finds the dividers. The fallback itself could not run
+live here; whether it fixes the reporter's case needs their confirmation.
+
+L11 fixed in 0.1.3: release notes go through `plain_notes` before
+`trim_notes`, so the update alert shows headings without `#`, bullets
+instead of list markers, joined wrapped lines, and no `**`, `__`,
+backticks or link targets.
 

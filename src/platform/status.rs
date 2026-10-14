@@ -145,6 +145,14 @@ impl StatusItems {
         let icon = make(ICON_AUTOSAVE);
         let hidden = make(DIVIDER_AUTOSAVE);
         let always_hidden = make(ALWAYS_HIDDEN_AUTOSAVE);
+        // The seeds only fill missing keys, so a stored `Visible` false
+        // would leave an item out of the menu bar, and every section needs
+        // all three (issue #1).
+        for item in [&icon, &hidden, &always_hidden] {
+            if !item.isVisible() {
+                item.setVisible(true);
+            }
+        }
 
         if let Some(button) = icon.button(mtm) {
             // SAFETY: the caller guarantees the target's lifetime and the
@@ -184,7 +192,21 @@ impl StatusItems {
     /// Frame of the icon button's window in AppKit space. Unlike the CG
     /// window title, reading it needs no TCC grant.
     pub fn icon_frame(&self) -> Option<Rect> {
-        let frame = self.icon.button(self.mtm)?.window()?.frame();
+        self.frame_of(&self.icon)
+    }
+
+    /// Frame of the hidden divider's window in AppKit space.
+    pub fn hidden_frame(&self) -> Option<Rect> {
+        self.frame_of(&self.hidden)
+    }
+
+    /// Frame of the always-hidden divider's window in AppKit space.
+    pub fn always_hidden_frame(&self) -> Option<Rect> {
+        self.frame_of(&self.always_hidden)
+    }
+
+    fn frame_of(&self, item: &NSStatusItem) -> Option<Rect> {
+        let frame = item.button(self.mtm)?.window()?.frame();
         Some(Rect::new(
             frame.origin.x,
             frame.origin.y,

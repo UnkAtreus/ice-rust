@@ -39,11 +39,11 @@ use super::timer;
 use super::updater::Updater;
 use super::windows;
 use crate::bar_layout::{layout, overflow_label, text_tile_size};
-use crate::chain::{DividerLookup, find_divider, find_titled, section_chains};
+use crate::chain::{DividerLookup, find_divider_or_frame, find_titled, section_chains};
 use crate::geometry::{self, ControlOrder, Display, MenuBarDisplay, cg_to_appkit, ice_bar_frame};
 use crate::model::{
-    BAR_PADDING, CLICK_SETTLE_POLL, CLICK_SETTLE_TIMEOUT, ControlNames, REHIDE_TICK, Rect,
-    WindowId, WindowRecord, is_menu_layer,
+    BAR_PADDING, CLICK_SETTLE_POLL, CLICK_SETTLE_TIMEOUT, ControlFrames, ControlNames, REHIDE_TICK,
+    Rect, WindowId, WindowRecord, is_menu_layer,
 };
 use crate::rehide::{Activity, Decision, Rehide};
 use crate::sections::{MenuBarState, Section};
@@ -665,18 +665,19 @@ impl Controller {
     /// readable, otherwise the stored positions.
     fn control_order(&self) -> ControlOrder {
         let all = windows::list_windows();
-        let icon = find_titled(&all, &self.names.icon);
-        let hidden = find_divider(&all, &self.names.hidden, &self.names.icon);
-        let always = match find_divider(&all, &self.names.always_hidden, &self.names.icon) {
+        let frames = self.control_frames();
+        let icon = find_titled(&all, &self.names.icon)
+            .map(|w| w.bounds)
+            .or(frames.icon);
+        let hidden = self.find_hidden(&all, &frames);
+        let always = match self.find_always_hidden(&all, &frames) {
             DividerLookup::Found(d) => Some(d),
             _ => None,
         };
         match (icon, hidden) {
-            (Some(icon), DividerLookup::Found(hidden)) => geometry::control_order(
-                &icon.bounds,
-                &hidden.bounds,
-                always.as_ref().map(|a| &a.bounds),
-            ),
+            (Some(icon), DividerLookup::Found(hidden)) => {
+                geometry::control_order(&icon, &hidden.bounds, always.as_ref().map(|a| &a.bounds))
+            }
             _ => {
                 let [icon, hidden, always] = status::stored_positions();
                 ControlOrder {
@@ -693,8 +694,7 @@ impl Controller {
     /// divider is not moved.
     fn check_always_hidden_placement(&self) {
         let all = windows::list_windows();
-        let DividerLookup::Found(always) =
-            find_divider(&all, &self.names.always_hidden, &self.names.icon)
+        let DividerLookup::Found(always) = self.find_always_hidden(&all, &self.control_frames())
         else {
             return;
         };
@@ -712,6 +712,49 @@ impl Controller {
                  far left to change that"
             );
         }
+    }
+
+    /// Our three control item windows in CG space, from AppKit. The icon's
+    /// frame counts only while it sits at the top of a display.
+    fn control_frames(&self) -> ControlFrames {
+        let primary_height = windows::primary_height();
+        let to_cg = |frame: Option<Rect>| {
+            frame
+                .filter(|f| !f.is_empty())
+                .map(|f| geometry::appkit_to_cg(f, primary_height))
+        };
+        ControlFrames {
+            icon: geometry::icon_rect(
+                &windows::displays(),
+                None,
+                self.status.icon_frame().as_ref(),
+                primary_height,
+            ),
+            hidden: to_cg(self.status.hidden_frame()),
+            always_hidden: to_cg(self.status.always_hidden_frame()),
+        }
+    }
+
+    fn find_hidden(&self, windows: &[WindowRecord], frames: &ControlFrames) -> DividerLookup {
+        find_divider_or_frame(
+            windows,
+            &self.names.hidden,
+            &self.names.icon,
+            frames.hidden.as_ref(),
+        )
+    }
+
+    fn find_always_hidden(
+        &self,
+        windows: &[WindowRecord],
+        frames: &ControlFrames,
+    ) -> DividerLookup {
+        find_divider_or_frame(
+            windows,
+            &self.names.always_hidden,
+            &self.names.icon,
+            frames.always_hidden.as_ref(),
+        )
     }
 
     /// Our icon in CG space: its titled window when Screen Recording allows,
@@ -751,12 +794,13 @@ impl Controller {
         Option<WindowRecord>,
         Result<Vec<WindowRecord>, &'static str>,
     ) {
-        let hidden = match find_divider(all, &self.names.hidden, &self.names.icon) {
+        let frames = self.control_frames();
+        let hidden = match self.find_hidden(all, &frames) {
             DividerLookup::Found(d) => d,
             DividerLookup::NotFound => return (None, Err(MSG_NO_DIVIDER)),
             DividerLookup::TitlesUnreadable => return (None, Err(MSG_NO_SCREEN_RECORDING)),
         };
-        let always = match find_divider(all, &self.names.always_hidden, &self.names.icon) {
+        let always = match self.find_always_hidden(all, &frames) {
             DividerLookup::Found(d) => Some(d),
             _ => None,
         };
@@ -1006,14 +1050,7 @@ impl Controller {
 
     /// Reads the menu bar for the Menu Bar Layout pane.
     fn load_layout(&self) -> LayoutSnapshot {
-        let displays = windows::displays();
-        let fallback = geometry::icon_rect(
-            &displays,
-            None,
-            self.status.icon_frame().as_ref(),
-            windows::primary_height(),
-        );
-        layout_pane::load_snapshot(&self.names, fallback)
+        layout_pane::load_snapshot(&self.names, &self.control_frames())
     }
 
     /// Opens the single Settings window, on `page` when given. The app is a

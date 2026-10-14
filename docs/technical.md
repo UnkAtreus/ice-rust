@@ -131,7 +131,9 @@ canvas) over a gradient sampled from the source.
 
 On macOS 26 every status item window, including ice-rust's own, belongs to
 Control Center, so even finding its own divider by title needs Screen
-Recording. The app requests missing grants at launch. With Use Ice Bar off,
+Recording. When titles are readable but none carries a divider's autosave
+name, ice-rust matches the window whose bounds equal the frame of the
+divider's own `NSStatusBarWindow` (issue #1). The app requests missing grants at launch. With Use Ice Bar off,
 plain hide and show work without either grant; the check that the icon sits
 right of the dividers then uses the stored positions. With Use Ice Bar on
 (the default), a click on the icon without Screen Recording opens the Ice

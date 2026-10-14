@@ -14,7 +14,7 @@ use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use super::layout_pane::{LayoutSnapshot, load_snapshot};
 use super::mover::{MoveCallback, MoveError, MoveRequest};
 use super::settings_window::{DEFAULT_SIZE, Page, SettingsHost, SettingsWindow};
-use crate::model::{CONTROL_ITEM_PREFIX, ControlNames, ICE_CONTROL_ITEM_PREFIX};
+use crate::model::{CONTROL_ITEM_PREFIX, ControlFrames, ControlNames, ICE_CONTROL_ITEM_PREFIX};
 use crate::sections::Section;
 use crate::settings::{self, Settings};
 
@@ -65,7 +65,10 @@ impl SettingsHost for RenderHost {
         };
         let mut last = LayoutSnapshot::empty("Divider not found");
         for prefix in prefixes {
-            let snapshot = load_snapshot(&ControlNames::with_prefix(prefix), None);
+            let snapshot = load_snapshot(
+                &ControlNames::with_prefix(prefix),
+                &ControlFrames::default(),
+            );
             if snapshot.model.is_some() {
                 *self.used.borrow_mut() = Some(prefix.to_string());
                 return snapshot;

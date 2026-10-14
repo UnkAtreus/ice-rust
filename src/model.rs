@@ -16,6 +16,15 @@ pub const CONTROL_ITEM_PREFIX: &str = "IceRust.ControlItem.";
 /// Prefix of Ice's control item titles (ledger section 2).
 pub const ICE_CONTROL_ITEM_PREFIX: &str = "Ice.ControlItem.";
 
+/// Frames of our three control item windows in CG space, read from AppKit.
+/// They find the windows when the titles do not (issue #1).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ControlFrames {
+    pub icon: Option<Rect>,
+    pub hidden: Option<Rect>,
+    pub always_hidden: Option<Rect>,
+}
+
 /// The three control item titles that share a prefix: `<prefix>Visible`,
 /// `<prefix>Hidden` and `<prefix>AlwaysHidden`.
 #[derive(Clone, Debug, PartialEq, Eq)]

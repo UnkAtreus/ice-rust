@@ -44,10 +44,10 @@ use crate::bar_scroll::{
     StripLayout, autoscroll_offset, document_x, insertion_at, keep_right_distance, strip_layout,
     visible_x,
 };
-use crate::chain::{DividerLookup, find_divider, find_titled, section_chains};
+use crate::chain::{DividerLookup, find_divider_or_frame, find_titled, section_chains};
 use crate::geometry::menu_bar_display;
 use crate::image_check::prefers_dark_text;
-use crate::model::{ControlNames, Rect, WindowId, WindowRecord};
+use crate::model::{ControlFrames, ControlNames, Rect, WindowId, WindowRecord};
 use crate::sections::Section;
 
 /// Bar fill when the menu bar color cannot be sampled, per appearance.
@@ -160,26 +160,35 @@ fn tile_image(window: &WindowRecord, captured: &ItemImage) -> TileImage {
 
 /// Reads the menu bar through the control items named by `names`:
 /// window list, three sections, item images and the menu bar color.
-/// `icon_fallback` (CG space) stands in for the icon window when its title
-/// is unreadable.
+/// `frames` (CG space, from AppKit) find our own control item windows when
+/// their titles do not; offscreen renders of another app pass none.
 ///
 /// Every capture goes through one gate, and a capture that times out keeps
 /// it closed for the ones after it. So the captures run in the order most
 /// likely to succeed: the off-screen hidden and always-hidden items first,
 /// then the on-screen visible items and the color sample, which timed out
 /// in `render-settings` on the development host.
-pub fn load_snapshot(names: &ControlNames, icon_fallback: Option<Rect>) -> LayoutSnapshot {
+pub fn load_snapshot(names: &ControlNames, frames: &ControlFrames) -> LayoutSnapshot {
     let all = windows::list_windows();
-    let hidden = match find_divider(&all, &names.hidden, &names.icon) {
-        DividerLookup::Found(d) => d,
-        DividerLookup::NotFound => {
-            return LayoutSnapshot::empty(&format!("{} not found", names.hidden));
-        }
-        DividerLookup::TitlesUnreadable => {
-            return LayoutSnapshot::empty("Screen Recording permission needed");
-        }
-    };
-    let always = match find_divider(&all, &names.always_hidden, &names.icon) {
+    let hidden =
+        match find_divider_or_frame(&all, &names.hidden, &names.icon, frames.hidden.as_ref()) {
+            DividerLookup::Found(d) => d,
+            DividerLookup::NotFound => {
+                return LayoutSnapshot::empty(&format!(
+                    "{} is not in the menu bar. Quit and reopen ice-rust",
+                    names.hidden
+                ));
+            }
+            DividerLookup::TitlesUnreadable => {
+                return LayoutSnapshot::empty("Screen Recording permission needed");
+            }
+        };
+    let always = match find_divider_or_frame(
+        &all,
+        &names.always_hidden,
+        &names.icon,
+        frames.always_hidden.as_ref(),
+    ) {
         DividerLookup::Found(d) => Some(d),
         _ => None,
     };
@@ -193,7 +202,7 @@ pub fn load_snapshot(names: &ControlNames, icon_fallback: Option<Rect>) -> Layou
     let model = BarModel::from_sections(&chains, names, anchors);
 
     let displays = windows::displays();
-    let icon_rect = icon.as_ref().map(|w| w.bounds).or(icon_fallback);
+    let icon_rect = icon.as_ref().map(|w| w.bounds).or(frames.icon);
     let place = menu_bar_display(
         &all,
         &displays,

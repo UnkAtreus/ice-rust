@@ -280,7 +280,9 @@ by hand once, and later versions arrive through the app.
   `CGWindowListCopyWindowInfo`, keeps status item windows (layer 25), and
   walks the chain of windows whose edges touch, starting at its divider. The
   walk stops at a gap, at the always-hidden divider, or at any window 1000 pt
-  or wider.
+  or wider. It finds its own dividers by their window titles (the autosave
+  names) and, when no window carries the title, by the frame of the
+  divider's own window as AppKit reports it.
 - **Item images.** `CGWindowListCreateImageFromArray` captures windows by id,
   including items parked off screen. ice-rust captures one composite, crops
   each item from it, and captures an item alone when its crop is fully
@@ -430,7 +432,7 @@ finding with its evidence.
 ```sh
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test        # 241 tests: 222 in the library, 19 in the binary
+cargo test        # 246 tests: 227 in the library, 19 in the binary
 ```
 
 The logic lives in pure modules with unit tests (`chain`, `arrange`,
