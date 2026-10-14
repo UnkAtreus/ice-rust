@@ -548,6 +548,16 @@ impl SettingsWindow {
         self.host.closed();
     }
 
+    /// Detaches the views and the delegate from the closed window. AppKit
+    /// keeps a closed window alive as the app's previous key window and in
+    /// the current autorelease pool until a later event, and the window's
+    /// content kept every page, the layout snapshot and its images alive
+    /// with it (L7). After this only an empty window remains.
+    pub fn release_content(&self) {
+        self.window.setDelegate(None);
+        self.window.setContentView(None);
+    }
+
     fn sync_general(&self) {
         let s = self.host.settings();
         self.general.use_bar.setState(switch_state(s.use_ice_bar));

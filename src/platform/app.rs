@@ -1092,11 +1092,15 @@ impl Controller {
         {
             previous.activateWithOptions(NSApplicationActivationOptions::empty());
         }
-        // Drop the window after its delegate callback has returned.
+        // Drop the window after its delegate callback has returned, with its
+        // content detached so the pages are freed now (L7).
         let me = self.me.clone();
         timer::after(self.mtm, Duration::ZERO, move || {
             if let Some(c) = me.upgrade() {
-                c.settings_window.borrow_mut().take();
+                let window = c.settings_window.borrow_mut().take();
+                if let Some(window) = window {
+                    window.release_content();
+                }
             }
         });
     }

@@ -779,3 +779,37 @@ Modifier state was clear (0x20000000) afterwards.
 | P12 | L5 not reproduced: a synthetic Escape (HID event tap) closed the ice-rust icon menu opened by a right-click (through `performClick`) in 2 of 2 runs, and closed a Control Center module (Battery) as a control. The key-logging window received no key, so the menu took the Escape. | on-screen menu windows before and after; key log |
 | P13 | L7 confirmed, without growth: after each of three open and close cycles of Settings on the Layout page the footprint was 68 to 69 MB (MALLOC_SMALL 25 to 26 MB, CG image 15 MB); an open window added about 1 MB. The memory is kept, not leaked per cycle. | `footprint` |
 | P14 | Ice Bar overflow not testable on this machine: the three sections together measure about 1220 pt and the narrowest display is 1512 pt, so the "+N" tile cannot appear. The overflow rule is covered by unit tests in `bar_layout.rs`. | read-only probe |
+
+## L7 root cause and L10 (2026-10-14)
+
+Measured on 0.1.1 from `dist/` with `footprint`, `heap`, `vmmap`,
+`leaks --traceTree` and `malloc_history` (MallocStackLogging, one run).
+
+| Evidence | Observation |
+|---|---|
+| `heap`, a fresh process | 45 to 53 MB footprint; CG image 17 to 23 MB; no Settings objects. |
+| `heap`, 20 s and 50 s after closing Settings | Still alive: one NSWindow, the LayoutCanvas, 4 sidebar rows, 6 page views and 36 text field cells (3 before opening). The Rust side had dropped its references. |
+| `leaks --traceTree` on that NSWindow | Referenced by NSApplication's `_previousKeyWindow` and by an autorelease pool page of the main thread, which was waiting in `_DPSNextEvent` for the next event. |
+| `heap` after other events reached the app | The window and its views were gone. Live malloc 24.4 MB against 29.9 MB at launch; MALLOC_SMALL dirty pages 24 MB against 14 to 16 MB, which is freed memory the allocator keeps. |
+| `malloc_history`, fresh launch | About 26 MB of purgeable blocks (1.8 MB and 0.5 MB each) come from `_NSCreateStatusItemShadowImage`: AppKit draws a shadow image for each status item (two `NSStatusBarShadowView`s per item window), and the expanded dividers are 5016 pt wide. They exist before Settings ever opens. |
+| lldb, divider buttons hidden | No change: the shadow views still draw the full width. |
+| lldb, expanded length 2700 pt | Footprint fell by about 7 MB and the hidden items stayed off screen on this display arrangement. |
+| lldb, content view and delegate detached from the closed window | The views stayed alive: they were also in the main thread's autorelease pool, which NSApplication drains only after the next event. Timers and Accessibility actions run while it waits for that event. |
+
+L7 had two parts. The closed window and everything in it stayed alive
+until AppKit let go of it at a later event; with no other windows and no
+input, that could take a long time. Fixed in 0.1.2 in two steps: when the
+app drops the window it first detaches the content view and the delegate
+(`SettingsWindow::release_content`), so only an empty window stays with
+AppKit; and every timer callback, including the one that drops the window,
+runs in its own autorelease pool (`platform/timer.rs`), so what AppKit
+autoreleases there is freed when the callback returns instead of at the
+next event. The rest of the footprint after closing is not Settings memory:
+freed allocator pages that are reused later, AppKit caches (including the
+16 menu bar windows AppKit creates on four displays while ice-rust is a
+regular app), and the divider shadow images below.
+
+| # | Finding | Status |
+|---|---|---|
+| L10 | AppKit's status item shadow images for the two expanded dividers take about 15 to 20 MB of the footprint from launch. A shorter expanded length would shrink them, but it could leave hidden items on an adjacent display when "Displays have separate Spaces" is off, which this machine could not test. Ice uses the same 10000 pt length. | Open, documented; length unchanged. |
+

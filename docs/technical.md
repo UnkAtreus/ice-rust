@@ -554,13 +554,18 @@ menu bar items.
   development host (displays asleep at the time). The copies on the active
   menu bar, which the chain walk selects, captured correctly: 18 of 18
   across two probes.
-- Open findings from the live runs ([design.md](design.md)): closing
-  Settings does not release its memory (about 15 MB of CG images and
-  25 MB of small allocations stay; 69 MB footprint after closing, against
-  32 MB for v1 in menu bar only mode), though repeated open and close
-  cycles do not add to it (L6, L7, P13); on-screen captures are not
-  skipped at once while the displays sleep (G6). L5 (Escape and the icon
-  menu) did not reproduce in 0.1.1 (P12).
+- Memory ([design.md](design.md), L7 and L10): since 0.1.2 the Settings
+  window's content is detached when it closes, because AppKit keeps a
+  closed window until a later event, and every timer callback runs in its
+  own autorelease pool (`platform/timer.rs`), because timers fire inside
+  the pool NSApplication drains only after the next event. About 15 to
+  20 MB of the footprint from launch on is AppKit's shadow images for the
+  two expanded dividers.
+  After Settings has been open the footprint stays a few MB higher (freed
+  allocator pages, AppKit caches); repeated cycles do not add to it.
+- Open findings from the live runs: on-screen captures are not skipped at
+  once while the displays sleep (G6). L5 (Escape and the icon menu) did
+  not reproduce in 0.1.1 (P12).
 
 ## Verification history
 

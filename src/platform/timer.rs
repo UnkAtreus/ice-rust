@@ -5,13 +5,18 @@
 //! variants fire in the common modes, which include tracking; the input
 //! code uses them so a posted mouse-down always gets its mouse-up and the
 //! cursor always comes back.
+//!
+//! Timers fire while NSApplication waits for the next event, inside the
+//! autorelease pool it drains only after that event arrives. An idle menu
+//! bar app can wait a long time, so every callback runs in its own pool
+//! (L7: a closed Settings window stayed alive this way).
 
 use std::ptr::NonNull;
 use std::time::Duration;
 
 use block2::RcBlock;
 use objc2::MainThreadMarker;
-use objc2::rc::Retained;
+use objc2::rc::{Retained, autoreleasepool};
 use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes, NSTimer};
 
 fn block<F>(f: F) -> RcBlock<dyn Fn(NonNull<NSTimer>)>
@@ -20,7 +25,8 @@ where
 {
     RcBlock::new(move |timer: NonNull<NSTimer>| {
         // SAFETY: the timer is alive while its own block runs.
-        f(unsafe { timer.as_ref() });
+        let timer = unsafe { timer.as_ref() };
+        autoreleasepool(|_| f(timer));
     })
 }
 

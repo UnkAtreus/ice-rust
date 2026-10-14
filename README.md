@@ -137,8 +137,6 @@ and its menu.
 
 Planned, in rough priority order. Nothing here is implemented yet.
 
-- [ ] Release Settings memory when the window closes (L7 in
-  [docs/design.md](docs/design.md))
 - [ ] Global hotkeys for the sections and the Ice Bar
 - [ ] Show hidden items on hover, on a click in empty menu bar space, and on scroll
 - [ ] Smart and focused-app rehide strategies
@@ -343,7 +341,8 @@ Where the difference comes from:
 
 - **No image cache that grows.** ice-rust captures item images when the Ice
   Bar or the Menu Bar Layout page opens. The Ice Bar drops its images when
-  it closes; the Layout page keeps only its latest snapshot (L7). Ice keeps
+  it closes; the Layout page keeps only its latest snapshot and frees it
+  when Settings closes. Ice keeps
   its images in a cache that never evicts entries. Ice users report
   about 4 GB after long runtimes
   ([#530](https://github.com/jordanbaird/Ice/issues/530)), and an open pull
@@ -364,8 +363,14 @@ What these numbers do not cover:
 - Each row is a single run on one machine. ice-rust has no multi-day soak
   test yet, so long-run growth is untested; the Ice long-run figures come
   from Ice's issue tracker, not from this machine.
-- Closing Settings does not release its memory yet (L7, below), so
-  ice-rust stays near 70 MB after Settings has been open until you quit it.
+- About 15 to 20 MB of ice-rust's footprint, from launch on, is AppKit's
+  drawing of the two expanded dividers: macOS draws a shadow image for each
+  status item, and an expanded divider is 5016 pt wide (finding L10 in
+  [docs/design.md](docs/design.md)). Ice expands its dividers to the same
+  10000 pt length.
+- After Settings has been open the footprint stays a few MB above a fresh
+  launch, because the memory allocator keeps freed pages for reuse and
+  AppKit keeps caches (L7, below).
 - The comparison covers memory only. CPU and energy use were not measured.
 
 ## Known limitations and open issues
@@ -386,13 +391,15 @@ What these numbers do not cover:
   on-screen window takes about 1 s and returns a transparent image
   (finding G6), so the Visible bar in Menu Bar Layout shows placeholders.
   ice-rust does not yet skip those captures while the displays sleep.
-- **Settings memory not released (L7).** Closing the Settings window does
-  not release its memory: about 16 MB of images and 24 MB of small
-  allocations stay, for a footprint of 69 MB after closing. The first
-  version of ice-rust, which had no Settings window, measured 32 MB
-  (finding L6 in [docs/design.md](docs/design.md)). Opening and closing
-  Settings again does not add to it. The planned fix drops the layout
-  snapshot, tile images and window content on close.
+- **Memory after Settings (L7).** Up to 0.1.1, AppKit kept the closed
+  Settings window, with every page and the layout images, until a later
+  event reached ice-rust. Since 0.1.2 ice-rust detaches the window's
+  content when it closes and drains an autorelease pool after each timer
+  callback, so those are freed at once. The footprint still
+  stays a few MB above a fresh launch, because the memory allocator keeps
+  freed pages for reuse and AppKit keeps caches, including the menu bar
+  windows it creates while Settings makes ice-rust a regular app. Opening
+  and closing Settings again does not add to it.
 - **Move tuning.** Live moves landed in the right place, but the move timings
   and drop offsets are starting values that have not been tuned.
 - **Ice Bar overflow.** When the hidden items are wider than the display,
