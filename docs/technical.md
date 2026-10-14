@@ -554,13 +554,13 @@ menu bar items.
   development host (displays asleep at the time). The copies on the active
   menu bar, which the chain walk selects, captured correctly: 18 of 18
   across two probes.
-- Open findings from the live runs ([design.md](design.md)): a synthetic Escape did not
-  close the status item menu opened through `performClick`, and a real
-  keyboard Escape is untested (L5); closing Settings does not release its
-  memory (about 16 MB of CG images and 24 MB of small allocations stay;
-  69 MB footprint after closing, against 32 MB for v1 in menu bar only
-  mode) (L6, L7); on-screen captures are not skipped at once while the
-  displays sleep (G6).
+- Open findings from the live runs ([design.md](design.md)): closing
+  Settings does not release its memory (about 15 MB of CG images and
+  25 MB of small allocations stay; 69 MB footprint after closing, against
+  32 MB for v1 in menu bar only mode), though repeated open and close
+  cycles do not add to it (L6, L7, P13); on-screen captures are not
+  skipped at once while the displays sleep (G6). L5 (Escape and the icon
+  menu) did not reproduce in 0.1.1 (P12).
 
 ## Verification history
 

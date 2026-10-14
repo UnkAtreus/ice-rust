@@ -763,3 +763,19 @@ from the menu and on the About page.
 Not yet verified live: the update prompt with Install, Later and Skip This
 Version, and the relaunch after an install. Both need a release newer than
 0.1.1.
+
+## Live test 0.1.1 (2026-10-14, macOS 26.3, Ice quit, maintainer approved)
+
+Run against the release bundle in `dist/`. Settings was opened and closed
+through Accessibility actions (no pointer events). Synthetic clicks put
+the pointer back where it was. A small frontmost window logged any key it
+received, so a stray Escape could not reach the user's apps. Every step
+first checked that no user input had arrived since the previous step.
+Modifier state was clear (0x20000000) afterwards.
+
+| # | Result | Evidence |
+|---|---|---|
+| P11 | Pass (G3 hold): with the hidden section revealed and the AirDrop menu (Control Center, layer 100) open, the section stayed revealed for 31 s, twice the 15 s interval, and the menu stayed open. After Escape closed the menu, the section rehid 13 to 15 s later. The pointer stayed below the menu bar throughout. | hidden divider width polled every 2 to 3 s (26 pt revealed, 5016 pt hidden); on-screen menu windows |
+| P12 | L5 not reproduced: a synthetic Escape (HID event tap) closed the ice-rust icon menu opened by a right-click (through `performClick`) in 2 of 2 runs, and closed a Control Center module (Battery) as a control. The key-logging window received no key, so the menu took the Escape. | on-screen menu windows before and after; key log |
+| P13 | L7 confirmed, without growth: after each of three open and close cycles of Settings on the Layout page the footprint was 68 to 69 MB (MALLOC_SMALL 25 to 26 MB, CG image 15 MB); an open window added about 1 MB. The memory is kept, not leaked per cycle. | `footprint` |
+| P14 | Ice Bar overflow not testable on this machine: the three sections together measure about 1220 pt and the narrowest display is 1512 pt, so the "+N" tile cannot appear. The overflow rule is covered by unit tests in `bar_layout.rs`. | read-only probe |

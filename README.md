@@ -390,11 +390,9 @@ What these numbers do not cover:
   not release its memory: about 16 MB of images and 24 MB of small
   allocations stay, for a footprint of 69 MB after closing. The first
   version of ice-rust, which had no Settings window, measured 32 MB
-  (finding L6 in [docs/design.md](docs/design.md)). The planned fix drops
-  the layout snapshot, tile images and window content on close.
-- **Escape and status menus (L5).** A synthetic Escape did not close the
-  status item menu opened in testing; a click elsewhere did. A real keyboard
-  Escape is untested.
+  (finding L6 in [docs/design.md](docs/design.md)). Opening and closing
+  Settings again does not add to it. The planned fix drops the layout
+  snapshot, tile images and window content on close.
 - **Move tuning.** Live moves landed in the right place, but the move timings
   and drop offsets are starting values that have not been tuned.
 - **Ice Bar overflow.** When the hidden items are wider than the display,
