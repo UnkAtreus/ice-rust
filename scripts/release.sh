@@ -3,6 +3,8 @@
 # that publishes it. Publishing is left to the person running the script.
 #
 #   scripts/release.sh <version>
+#   OUT_DIR=<dir> scripts/release.sh <version>   build into <dir> instead,
+#                                  for example while dist/IceRust.app runs
 #
 # Needs: the version already set in Cargo.toml, the private update key at
 # $ICE_RUST_UPDATE_KEY (default ~/.config/ice-rust/update-signing.key), and
@@ -29,23 +31,26 @@ if [[ ! -f "$key" ]]; then
     exit 1
 fi
 
-OUT_DIR=dist scripts/bundle.sh
-bin="$root/dist/IceRust.app/Contents/MacOS/ice-rust"
+mkdir -p "${OUT_DIR:-dist}"
+out="$(cd "${OUT_DIR:-dist}" && pwd)"
+OUT_DIR="$out" scripts/bundle.sh
+bin="$out/IceRust.app/Contents/MacOS/ice-rust"
 name="IceRust-$version-arm64"
-cd dist
+cd "$out"
 rm -rf "$name" "$name.zip" "$name.zip.sha256" "$name.zip.sig" "$name-src"
 # The zip holds IceRust.app alone, as the updater requires; LICENSE and
 # NOTICE travel inside the bundle (Contents/Resources, see bundle.sh).
-ditto -c -k --sequesterRsrc --keepParent IceRust.app "$name.zip"
+# Extended attributes and resource forks stay out, so no __MACOSX folder.
+ditto -c -k --norsrc --noextattr --noacl --keepParent IceRust.app "$name.zip"
 "$bin" update-sign --key "$key" "$name.zip"
 "$bin" update-verify "$name.zip"
 shasum -a 256 "$name.zip" > "$name.zip.sha256"
 
 cat <<CMD
 
-Built and signed dist/$name.zip. Check it, then publish with:
+Built and signed $out/$name.zip. Check it, then publish with:
 
   git tag -a v$version -m "ice-rust $version" && git push origin v$version
-  gh release create v$version dist/$name.zip dist/$name.zip.sig dist/$name.zip.sha256 \\
+  gh release create v$version "$out/$name.zip" "$out/$name.zip.sig" "$out/$name.zip.sha256" \\
       --title "ice-rust $version" --notes-file <notes.md>
 CMD

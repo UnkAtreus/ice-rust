@@ -456,8 +456,9 @@ cargo run --release -- apply-update --app <IceRust.app> --zip <zip> --sig <sig>
 ### Releasing
 
 1. Set the new version in `Cargo.toml` and commit.
-2. Run `scripts/release.sh <version>`. It builds `dist/IceRust.app`, zips it,
-   signs the zip with the private key at `~/.config/ice-rust/update-signing.key`
+2. Run `scripts/release.sh <version>`. It builds `dist/IceRust.app`
+   (`OUT_DIR=<dir>` builds into another folder), zips it, signs the zip with
+   the private key at `~/.config/ice-rust/update-signing.key`
    (`ICE_RUST_UPDATE_KEY` overrides the path), verifies the signature with the
    key built into the new binary, writes the SHA-256 file, and prints the
    `git tag` and `gh release create` commands to publish. It publishes nothing
