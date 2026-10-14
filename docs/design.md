@@ -760,9 +760,8 @@ turning on Launch at login added IceRust to System Settings > General >
 Login Items, and Check for Updates... reported the latest version both
 from the menu and on the About page.
 
-Not yet verified live: the update prompt with Install, Later and Skip This
-Version, and the relaunch after an install. Both need a release newer than
-0.1.1.
+The update prompt and the relaunch were verified with the 0.1.2 release
+(P15 below).
 
 ## Live test 0.1.1 (2026-10-14, macOS 26.3, Ice quit, maintainer approved)
 
@@ -812,4 +811,15 @@ regular app), and the divider shadow images below.
 | # | Finding | Status |
 |---|---|---|
 | L10 | AppKit's status item shadow images for the two expanded dividers take about 15 to 20 MB of the footprint from launch. A shorter expanded length would shrink them, but it could leave hidden items on an adjacent display when "Displays have separate Spaces" is off, which this machine could not test. Ice uses the same 10000 pt length. | Open, documented; length unchanged. |
+
+## Live test 0.1.2 (2026-10-14, macOS 26.3, maintainer approved)
+
+| # | Result | Evidence |
+|---|---|---|
+| P15 | Pass (update from 0.1.1): Check for Updates... in the running 0.1.1 showed "ice-rust 0.1.2 is available (you have 0.1.1)" with the release notes and Install, Skip This Version and Later. Install replaced `dist/IceRust.app`, and the app relaunched as 0.1.2 about 2 s later with a valid strict code signature. The relaunched app removed `IceRust.app.previous` and recorded the new version. All three permissions read as missing in the new process, as expected for a new ad-hoc signature. | buttons and text read through Accessibility; `pgrep`, `plutil`, `codesign`; lldb preflight calls |
+| P16 | Pass (L7 fix): on 0.1.2, 3 s after closing Settings with its close button, the LayoutCanvas, the sidebar rows and the page views were freed, and text field cells fell from 36 to 4 (3 before opening). One empty NSWindow stays with AppKit. On 0.1.1 the same objects were still alive 50 s after closing. Footprint 62 MB before opening, 74 MB open, 69 MB 18 s after closing. Run before the permissions were granted again, so the layout page held no item images. | `heap`, `footprint` |
+
+| # | Finding | Status |
+|---|---|---|
+| L11 | The update alert shows the release notes as raw Markdown ("##" headings, "**" emphasis). | Open, cosmetic. |
 
