@@ -754,5 +754,12 @@ with 0.1.1 (strict code signature valid, binary identical to the
 release, no staging or download folders left). `apply-update` with the
 release binary refused the same version and a tampered zip.
 
-Not yet verified live: the prompt, the relaunch, Launch at login
-registration and approval, and the permission notice, which need the GUI.
+Verified by hand with the 0.1.1 release bundle (2026-10-14): the
+permission notice appeared after the first launch of the new version,
+turning on Launch at login added IceRust to System Settings > General >
+Login Items, and Check for Updates... reported the latest version both
+from the menu and on the About page.
+
+Not yet verified live: the update prompt with Install, Later and Skip This
+Version, and the relaunch after an install. Both need a release newer than
+0.1.1.
