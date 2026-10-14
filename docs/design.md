@@ -744,6 +744,15 @@ zip, wrong key, same version, extra zip entry, and a release build ignoring
 the test key. Verified with the release build and the real key: a signed
 0.0.1 test zip installed over a 0.0.0 copy, and a zip signed with the test
 key was refused. One read-only `check-update` against GitHub reported
-0.1.0 as current and up to date. Not yet verified live: the prompt, the
-relaunch, Launch at login registration and approval, and the permission
-notice, which need the GUI.
+0.1.0 as current and up to date.
+
+After publishing v0.1.1: the downloaded assets matched the local build
+byte for byte. A copy of the code labeled 0.1.0 saw 0.1.1 as available
+with both asset URLs, and its check and `download_and_install` path,
+run once against GitHub, replaced a copy of the published 0.1.0 bundle
+with 0.1.1 (strict code signature valid, binary identical to the
+release, no staging or download folders left). `apply-update` with the
+release binary refused the same version and a tampered zip.
+
+Not yet verified live: the prompt, the relaunch, Launch at login
+registration and approval, and the permission notice, which need the GUI.
