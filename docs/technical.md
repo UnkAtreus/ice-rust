@@ -133,7 +133,8 @@ revealed or the Ice Bar is open:
 |---|---|---|
 | ice-rust Logo (default) | `menubar-template.png` | `menubar-template-active.png` |
 | Dot | `circlebadge` | `circlebadge.fill` |
-| Ellipsis | `ellipsis.circle` | `ellipsis.circle.fill` |
+| Ellipsis | three solid dots, drawn | three outlined dots, drawn |
+| Ellipsis Circle | `ellipsis.circle` | `ellipsis.circle.fill` |
 | Chevron | `chevron.left` | `chevron.right` |
 | Arrow | `arrow.left.circle` | `arrow.right.circle.fill` |
 | Eye | `eye.slash` | `eye` |
@@ -145,7 +146,10 @@ revealed or the Ice Bar is open:
 | Custom Image | the chosen image | the same image |
 
 The symbols are SF Symbols at their default size, the same size as the
-divider chevrons, drawn as template images. The two images of each pair
+divider chevrons, drawn as template images. SF Symbols has no outlined
+`ellipsis`, so ice-rust draws the Ellipsis dots itself as vector template
+images: three 4 pt dots 2.5 pt apart (17 x 4 pt), outlined with a 1.1 pt
+line while items are shown. The two images of each pair
 have the same width, so the items left of the icon do not move when the
 state changes. A style whose symbols the system lacks, or Custom Image with
 no image stored, shows the logo.
@@ -431,7 +435,7 @@ Stored in the process's standard user defaults:
 | `RehideInterval` | 15 | Idle seconds before hiding (0 to 3600 stored; the Settings window offers 5 to 60) |
 | `AlwaysHiddenPlacementV2` | absent | Set once the v1.2 always-hidden placement migration has run (see below) |
 | `AutomaticallyCheckForUpdates` | true | Daily update checks (v1.3) |
-| `IconStyle` | `ice` | Icon style (v1.4): `ice`, `dot`, `ellipsis`, `chevron`, `arrow`, `eye`, `door`, `sunglasses`, `snowflake`, `grid`, `star` or `custom`; an unknown value means `ice` |
+| `IconStyle` | `ice` | Icon style (v1.4): `ice`, `dot`, `ellipsis`, `ellipsis-circle`, `chevron`, `arrow`, `eye`, `door`, `sunglasses`, `snowflake`, `grid`, `star` or `custom`; an unknown value means `ice` |
 | `TintCustomIcon` | true | Draw the custom image in the menu bar's text color |
 | `CustomIconImage` | absent | The custom image as PNG data, fitted to 24 x 18 pt at 3x |
 | `LastUpdateCheck` | absent | Seconds since 1970 of the last successful update check |

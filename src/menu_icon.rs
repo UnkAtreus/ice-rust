@@ -1,5 +1,6 @@
-//! Menu bar icon styles (v1.4): the ice-rust logo, a pair of SF Symbols, or
-//! an image the user chose. Pure; `platform::menu_icon` makes the NSImages.
+//! Menu bar icon styles (v1.4): the ice-rust logo, a pair of SF Symbols,
+//! three drawn dots, or an image the user chose. Pure; `platform::menu_icon`
+//! makes the NSImages.
 
 /// One look for the icon that shows and hides the sections.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -8,6 +9,7 @@ pub enum IconStyle {
     Ice,
     Dot,
     Ellipsis,
+    EllipsisCircle,
     Chevron,
     Arrow,
     Eye,
@@ -21,10 +23,11 @@ pub enum IconStyle {
 
 impl IconStyle {
     /// Every style, in the order the Settings window lists them.
-    pub const ALL: [IconStyle; 12] = [
+    pub const ALL: [IconStyle; 13] = [
         IconStyle::Ice,
         IconStyle::Dot,
         IconStyle::Ellipsis,
+        IconStyle::EllipsisCircle,
         IconStyle::Chevron,
         IconStyle::Arrow,
         IconStyle::Eye,
@@ -42,6 +45,7 @@ impl IconStyle {
             IconStyle::Ice => "ice",
             IconStyle::Dot => "dot",
             IconStyle::Ellipsis => "ellipsis",
+            IconStyle::EllipsisCircle => "ellipsis-circle",
             IconStyle::Chevron => "chevron",
             IconStyle::Arrow => "arrow",
             IconStyle::Eye => "eye",
@@ -64,6 +68,7 @@ impl IconStyle {
             IconStyle::Ice => "ice-rust Logo",
             IconStyle::Dot => "Dot",
             IconStyle::Ellipsis => "Ellipsis",
+            IconStyle::EllipsisCircle => "Ellipsis Circle",
             IconStyle::Chevron => "Chevron",
             IconStyle::Arrow => "Arrow",
             IconStyle::Eye => "Eye",
@@ -76,15 +81,16 @@ impl IconStyle {
         }
     }
 
-    /// SF Symbols for (items hidden, items shown), or `None` for the logo
-    /// and the custom image. Like the logo, most styles fill in while items
-    /// are shown; Chevron and Arrow turn around, Eye opens, Door opens and
-    /// Sunglasses come off.
-    pub fn symbols(self) -> Option<(&'static str, &'static str)> {
-        Some(match self {
-            IconStyle::Ice | IconStyle::Custom => return None,
+    /// Where the style's images come from. Like the logo, most styles fill
+    /// in while items are shown; Chevron and Arrow turn around, Eye opens,
+    /// Door opens and Sunglasses come off.
+    pub fn art(self) -> IconArt {
+        let (hidden, shown) = match self {
+            IconStyle::Ice => return IconArt::Logo,
+            IconStyle::Ellipsis => return IconArt::Dots,
+            IconStyle::Custom => return IconArt::Custom,
             IconStyle::Dot => ("circlebadge", "circlebadge.fill"),
-            IconStyle::Ellipsis => ("ellipsis.circle", "ellipsis.circle.fill"),
+            IconStyle::EllipsisCircle => ("ellipsis.circle", "ellipsis.circle.fill"),
             IconStyle::Chevron => ("chevron.left", "chevron.right"),
             IconStyle::Arrow => ("arrow.left.circle", "arrow.right.circle.fill"),
             IconStyle::Eye => ("eye.slash", "eye"),
@@ -93,8 +99,64 @@ impl IconStyle {
             IconStyle::Snowflake => ("snowflake.circle", "snowflake.circle.fill"),
             IconStyle::Grid => ("square.grid.2x2", "square.grid.2x2.fill"),
             IconStyle::Star => ("star", "star.fill"),
-        })
+        };
+        IconArt::Symbols { hidden, shown }
     }
+
+    /// SF Symbols for (items hidden, items shown), or `None` for a style
+    /// with other art.
+    pub fn symbols(self) -> Option<(&'static str, &'static str)> {
+        match self.art() {
+            IconArt::Symbols { hidden, shown } => Some((hidden, shown)),
+            _ => None,
+        }
+    }
+}
+
+/// Where a style's two images come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IconArt {
+    /// The embedded ice-rust glyphs.
+    Logo,
+    /// SF Symbols for items hidden and items shown.
+    Symbols {
+        hidden: &'static str,
+        shown: &'static str,
+    },
+    /// Three dots drawn by ice-rust: solid while items are hidden, outlined
+    /// while they are shown, like Ice's Ellipsis. SF Symbols has no
+    /// outlined `ellipsis`.
+    Dots,
+    /// The stored custom image, the same in both states.
+    Custom,
+}
+
+/// Diameter of each drawn dot, in points.
+pub const DOT_DIAMETER: f64 = 4.0;
+/// Space between two drawn dots, in points.
+pub const DOT_GAP: f64 = 2.5;
+/// Line width of an outlined dot, in points.
+pub const DOT_LINE: f64 = 1.1;
+// An outlined dot keeps a hole of at least 1 pt.
+const _: () = assert!(DOT_DIAMETER - 2.0 * DOT_LINE > 1.0);
+
+/// Size of the three-dot image, in points.
+pub fn dots_size() -> (f64, f64) {
+    (3.0 * DOT_DIAMETER + 2.0 * DOT_GAP, DOT_DIAMETER)
+}
+
+/// Frames (x, y, width, height) of the three dots, left to right. An
+/// outlined dot strokes this frame inset by half the line width, so its
+/// line stays inside the image.
+pub fn dot_frames() -> [(f64, f64, f64, f64); 3] {
+    [0.0, 1.0, 2.0].map(|i| {
+        (
+            i * (DOT_DIAMETER + DOT_GAP),
+            0.0,
+            DOT_DIAMETER,
+            DOT_DIAMETER,
+        )
+    })
 }
 
 /// Largest size of a custom image in the menu bar, in points: as tall as
@@ -178,10 +240,54 @@ mod tests {
     }
 
     #[test]
-    fn only_logo_and_custom_lack_symbols() {
+    fn art_of_each_style() {
+        assert_eq!(IconStyle::Ice.art(), IconArt::Logo);
+        assert_eq!(IconStyle::Ellipsis.art(), IconArt::Dots);
+        assert_eq!(IconStyle::Custom.art(), IconArt::Custom);
+        assert_eq!(
+            IconStyle::EllipsisCircle.art(),
+            IconArt::Symbols {
+                hidden: "ellipsis.circle",
+                shown: "ellipsis.circle.fill"
+            }
+        );
         for style in IconStyle::ALL {
-            let expected = !matches!(style, IconStyle::Ice | IconStyle::Custom);
-            assert_eq!(style.symbols().is_some(), expected, "{style:?}");
+            let drawn = matches!(
+                style,
+                IconStyle::Ice | IconStyle::Ellipsis | IconStyle::Custom
+            );
+            assert_eq!(style.symbols().is_none(), drawn, "{style:?}");
+            if let Some((hidden, shown)) = style.symbols() {
+                assert_eq!(style.art(), IconArt::Symbols { hidden, shown });
+            }
+        }
+    }
+
+    #[test]
+    fn ellipsis_is_three_dots_and_ellipsis_circle_is_a_symbol() {
+        assert_eq!(IconStyle::from_key("ellipsis"), Some(IconStyle::Ellipsis));
+        assert_eq!(
+            IconStyle::from_key("ellipsis-circle"),
+            Some(IconStyle::EllipsisCircle)
+        );
+        assert_eq!(IconStyle::Ellipsis.title(), "Ellipsis");
+        assert_eq!(IconStyle::EllipsisCircle.title(), "Ellipsis Circle");
+    }
+
+    #[test]
+    fn dots_fill_their_image_without_touching() {
+        let (w, h) = dots_size();
+        assert_eq!((w, h), (17.0, 4.0));
+        let frames = dot_frames();
+        assert_eq!(frames[0].0, 0.0);
+        let (x, _, fw, _) = frames[2];
+        assert_eq!(x + fw, w);
+        for pair in frames.windows(2) {
+            let gap = pair[1].0 - (pair[0].0 + pair[0].2);
+            assert_eq!(gap, DOT_GAP);
+        }
+        for (_, y, fw, fh) in frames {
+            assert_eq!((y, fw, fh), (0.0, DOT_DIAMETER, DOT_DIAMETER));
         }
     }
 

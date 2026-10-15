@@ -3,11 +3,13 @@
 
 use std::path::Path;
 
+use block2::RcBlock;
 use objc2::AllocAnyThread;
 use objc2::rc::Retained;
+use objc2::runtime::Bool;
 use objc2_app_kit::{
-    NSBitmapImageFileType, NSBitmapImageRep, NSCompositingOperation, NSDeviceRGBColorSpace,
-    NSGraphicsContext, NSImage, NSImageInterpolation,
+    NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSColor, NSCompositingOperation,
+    NSDeviceRGBColorSpace, NSGraphicsContext, NSImage, NSImageInterpolation,
 };
 use objc2_foundation::{NSData, NSDictionary, NSRect, NSSize, NSString};
 
@@ -15,7 +17,8 @@ use super::brand;
 use super::ui::rect;
 use crate::brand::png_size;
 use crate::menu_icon::{
-    CUSTOM_MAX_POINTS, CUSTOM_SCALE, IconStyle, fit, stored_pixels, suggests_tint,
+    CUSTOM_MAX_POINTS, CUSTOM_SCALE, DOT_LINE, IconArt, IconStyle, dot_frames, dots_size, fit,
+    stored_pixels, suggests_tint,
 };
 use crate::settings::{self, KEY_CUSTOM_ICON_IMAGE};
 
@@ -34,6 +37,35 @@ fn symbol(name: &str) -> Option<Retained<NSImage>> {
     )?;
     image.setTemplate(true);
     Some(image)
+}
+
+/// Three dots as a vector template image: solid, or outlined with
+/// `DOT_LINE`.
+fn dots(filled: bool) -> Retained<NSImage> {
+    let (w, h) = dots_size();
+    let draw = RcBlock::new(move |_: NSRect| {
+        NSColor::blackColor().set();
+        for (x, y, dw, dh) in dot_frames() {
+            if filled {
+                NSBezierPath::bezierPathWithOvalInRect(rect(x, y, dw, dh)).fill();
+            } else {
+                let inset = DOT_LINE / 2.0;
+                let path = NSBezierPath::bezierPathWithOvalInRect(rect(
+                    x + inset,
+                    y + inset,
+                    dw - DOT_LINE,
+                    dh - DOT_LINE,
+                ));
+                path.setLineWidth(DOT_LINE);
+                path.stroke();
+            }
+        }
+        Bool::YES
+    });
+    let image = NSImage::imageWithSize_flipped_drawingHandler(NSSize::new(w, h), false, &draw);
+    image.setTemplate(true);
+    image.setAccessibilityDescription(Some(&NSString::from_str(DESCRIPTION)));
+    image
 }
 
 fn logo() -> Option<IconImages> {
@@ -65,22 +97,23 @@ pub fn stored_custom(tint: bool) -> Option<Retained<NSImage>> {
 /// Images for `style`, or `None` when this macOS lacks its symbols or no
 /// custom image is stored. The custom image looks the same in both states.
 pub fn style_images(style: IconStyle, tint: bool) -> Option<IconImages> {
-    match style {
-        IconStyle::Ice => logo(),
-        IconStyle::Custom => {
+    match style.art() {
+        IconArt::Logo => logo(),
+        IconArt::Dots => Some(IconImages {
+            hidden: dots(true),
+            shown: dots(false),
+        }),
+        IconArt::Custom => {
             let image = stored_custom(tint)?;
             Some(IconImages {
                 hidden: image.clone(),
                 shown: image,
             })
         }
-        _ => {
-            let (hidden, shown) = style.symbols()?;
-            Some(IconImages {
-                hidden: symbol(hidden)?,
-                shown: symbol(shown)?,
-            })
-        }
+        IconArt::Symbols { hidden, shown } => Some(IconImages {
+            hidden: symbol(hidden)?,
+            shown: symbol(shown)?,
+        }),
     }
 }
 

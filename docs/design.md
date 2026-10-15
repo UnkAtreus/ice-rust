@@ -859,7 +859,8 @@ ice-rust logo; offer several looks and let the user change it.
 
 | Part | Choice |
 |---|---|
-| Styles | `menu_icon::IconStyle`: the logo (default), ten SF Symbols pairs (Dot, Ellipsis, Chevron, Arrow, Eye, Door, Sunglasses, Snowflake, Grid, Star) and Custom Image. Ice offers a similar list (Arrow, Chevron, Door, Dot, Ellipsis, Ice Cube, Sunglasses, Custom) with its own artwork; SF Symbols ship with macOS, so ice-rust adds no artwork. |
+| Styles | `menu_icon::IconStyle`: the logo (default), Ellipsis (three drawn dots), ten SF Symbols pairs (Dot, Ellipsis Circle, Chevron, Arrow, Eye, Door, Sunglasses, Snowflake, Grid, Star) and Custom Image. Ice offers a similar list (Arrow, Chevron, Door, Dot, Ellipsis, Ice Cube, Sunglasses, Custom) with its own artwork; SF Symbols ship with macOS, so ice-rust adds no image files. |
+| Ellipsis | Added on maintainer request the same day: three dots with no circle. SF Symbols has only a solid `ellipsis`, so `menu_icon::dot_frames` lays out three 4 pt dots 2.5 pt apart (17 x 4 pt) and `platform::menu_icon` draws them as a vector template image, solid while items are hidden and outlined (1.1 pt line) while they are shown, like Ice's EllipsisFill and EllipsisStroke. The circled symbol pair became Ellipsis Circle. |
 | States | Each style has an image for items hidden and one for items shown (a section revealed or the Ice Bar open), as the logo already had. Most fill in; Chevron and Arrow turn around, Eye and Door open, Sunglasses come off. Both images of a pair have the same width, so the menu bar does not shift by a point when the state changes. |
 | Size | Symbols at their default size, the same as the divider chevrons. |
 | Custom image | Converted once into a PNG fitted to 24 x 18 pt at 3x and stored in defaults (`CustomIconImage`), so the original file can move. Match menu bar color (`TintCustomIcon`) makes it a template image; its first value comes from `menu_icon::suggests_tint` (some clear pixels, at most 2 % colored pixels). |
@@ -874,4 +875,6 @@ convert (a 4000 x 1000 image becomes 72 x 18 px, a 4 x 4 image grows to
 54 x 54), the tint suggestion is on for black and white glyphs and off for
 the colored app icon and opaque images, and a text file, an empty file and
 a missing file are refused. `render-settings --page general` drew the
-group with the logo, Eye and a colored custom image.
+group with the logo, Eye and a colored custom image. A grid drawn from
+`style_images` shows both images of every style, the Ellipsis dots solid
+and outlined at 17 x 4 pt.

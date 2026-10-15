@@ -51,8 +51,8 @@ it (see [Differences from Ice](#differences-from-ice)).
   (15 s by default, 5 to 60 s in Settings) while the pointer is outside the
   menu bar and no menu or panel is open.
 - **Icon styles.** Choose the icon on the General page: the ice-rust logo
-  (the default), Dot, Ellipsis, Chevron, Arrow, Eye, Door, Sunglasses,
-  Snowflake, Grid, Star, or an image file of your own. Each built-in style
+  (the default), Dot, Ellipsis, Ellipsis Circle, Chevron, Arrow, Eye, Door,
+  Sunglasses, Snowflake, Grid, Star, or an image file of your own. Each built-in style
   changes while hidden items are shown. A custom image can take the menu
   bar's text color or keep its own colors.
 - **Launch at login.** A switch on the General page registers IceRust.app as
@@ -327,8 +327,9 @@ and runtime observations.
   always-hidden). Ice's default collapses them to zero width through an
   AppKit layout constraint.
 - Use Ice Bar defaults to on. Ice defaults it to off.
-- The built-in icon styles are SF Symbols, apart from the ice-rust logo. Ice
-  draws its own artwork for each style and defaults to Dot.
+- The built-in icon styles are SF Symbols, apart from the ice-rust logo and
+  the three Ellipsis dots, which ice-rust draws. Ice draws its own artwork
+  for each style and defaults to Dot.
 - An always-hidden divider that ends up right of the hidden divider is
   reported on stderr and left in place. Ice moves it back.
 
