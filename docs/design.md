@@ -1067,3 +1067,7 @@ afterwards.
 
 While MenuCrowd's menus cover the icon, the icon cannot be clicked; Show
 on scroll still shows the items, and the hiding then brings the icon back.
+
+Hand test (2026-10-15, maintainer): with MenuCrowd in front on the
+built-in display, a real two-finger swipe hid the app menus and showed every
+icon, and hiding the items brought the menus and the focus back.
