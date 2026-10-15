@@ -17,10 +17,13 @@ use objc2_foundation::{NSNotification, NSOperationQueue, NSTimer};
 
 use super::Controller;
 use super::triggers::overlaps;
-use crate::app_menus::{MenuAction, MenuSituation, items_reach_menus, menu_action};
-use crate::model::{Rect, STATUS_LAYER};
-use crate::platform::{events, timer, windows};
-use crate::sections::MenuBarState;
+use crate::app_menus::{
+    MenuAction, MenuSituation, items_reach_menus, menu_action, menus_take_item_room,
+};
+use crate::chain::{DividerLookup, section_chains};
+use crate::model::{Rect, WindowRecord};
+use crate::platform::{events, menu_bar_space, timer, windows};
+use crate::sections::{MenuBarState, Section};
 
 /// When to measure after a change: the items take a moment to move, so a
 /// second look follows the first.
@@ -100,18 +103,47 @@ impl Controller {
         }
     }
 
-    /// Ice's test on the menu bar with our icon: the leftmost on-screen
-    /// status item at or left of the end of the frontmost app's menus.
-    /// `None` when the menus cannot be read.
+    /// Ice's test on the menu bar with our icon: the leftmost item at or
+    /// left of the end of the frontmost app's menus. The items are the laid
+    /// out positions from the full window list (the chain walk): macOS takes
+    /// items that collide with the menus off screen (L14). On a display
+    /// with a notch the menus must also continue right of it. `None` when
+    /// the menus or the dividers cannot be read.
     fn items_reach_app_menus(&self) -> Option<bool> {
         let on_screen = windows::list_on_screen();
         let place = self.menu_bar_place(&on_screen, events::pointer_location())?;
         let b = place.display.bounds;
         let bar = Rect::new(b.x, b.y, b.width, place.menu_bar_height);
         let end = self.app_menus_end(&bar, true)?;
-        let edges = on_screen
-            .iter()
-            .filter(|w| w.layer == STATUS_LAYER && overlaps(&w.bounds, &bar))
+        let notch = menu_bar_space::notches(self.mtm, windows::primary_height())
+            .into_iter()
+            .find(|n| overlaps(n, &bar));
+        if !menus_take_item_room(end, notch.map(|n| n.max_x())) {
+            return Some(false);
+        }
+        let all = windows::list_windows();
+        let frames = self.control_frames();
+        let DividerLookup::Found(hidden) = self.find_hidden(&all, &frames) else {
+            return None;
+        };
+        let always = match self.find_always_hidden(&all, &frames) {
+            DividerLookup::Found(d) => Some(d),
+            _ => None,
+        };
+        let chains = section_chains(&all, &hidden, always.as_ref());
+        let state = self.status.state();
+        let mut items: Vec<&WindowRecord> = chains.visible.iter().collect();
+        if state.is_shown(Section::Hidden) {
+            items.extend(&chains.hidden);
+            items.push(&hidden);
+        }
+        if state.is_shown(Section::AlwaysHidden) {
+            items.extend(&chains.always_hidden);
+            items.extend(always.as_ref());
+        }
+        let edges = items
+            .into_iter()
+            .filter(|w| overlaps(&w.bounds, &bar))
             .map(|w| w.bounds.min_x());
         Some(items_reach_menus(edges, end))
     }
@@ -127,17 +159,29 @@ impl Controller {
         self.app_menus.hiding.set(true);
         eprintln!("ice-rust: hiding application menus to make room for shown items");
         // As for Settings (L2), activation follows the policy change on the
-        // next pass. It is forced: a click on a status item does not make
-        // ice-rust active, and the app in front would keep its menus.
+        // next pass. A click on a status item or a scroll over the menu bar
+        // goes to the app in front, and since macOS 14 activation is
+        // cooperative, so a plain request is refused. Like Ice, ice-rust
+        // asks to be activated from the app in front (L14).
         let me = self.me.clone();
         timer::after(self.mtm, Duration::ZERO, move || {
-            if let Some(c) = me.upgrade()
-                && c.app_menus.hiding.get()
-            {
-                // Deprecated since macOS 14, where `activate` may decline
-                // while another app is in front.
-                #[allow(deprecated)]
-                NSApplication::sharedApplication(c.mtm).activateIgnoringOtherApps(true);
+            let Some(c) = me.upgrade() else {
+                return;
+            };
+            if !c.app_menus.hiding.get() {
+                return;
+            }
+            let current = NSRunningApplication::currentApplication();
+            let front = c.app_menus.previous.borrow().clone();
+            let sent = match front {
+                Some(front) => current.activateFromApplication_options(
+                    &front,
+                    NSApplicationActivationOptions::empty(),
+                ),
+                None => current.activateWithOptions(NSApplicationActivationOptions::empty()),
+            };
+            if !sent {
+                eprintln!("ice-rust: could not ask to become the active app");
             }
         });
     }

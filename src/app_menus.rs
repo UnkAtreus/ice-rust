@@ -6,8 +6,11 @@
 //! `platform::app::app_menus` acts on the decision.
 
 /// Whether the shown items reach the app menus: Ice's test, the leftmost
-/// on-screen status item's left edge at or left of the menus' right edge.
-/// No items reach nothing.
+/// item's left edge at or left of the menus' right edge. The edges are the
+/// laid-out positions of the visible items, the shown sections and their
+/// collapsed dividers. macOS 26 takes colliding items off screen instead of
+/// drawing them under the menus (L14), so on-screen windows alone never
+/// reach the menus. No items reach nothing.
 pub fn items_reach_menus(item_left_edges: impl IntoIterator<Item = f64>, menus_end: f64) -> bool {
     item_left_edges
         .into_iter()
@@ -16,6 +19,13 @@ pub fn items_reach_menus(item_left_edges: impl IntoIterator<Item = f64>, menus_e
             Some(min.map_or(x, |m| m.min(x)))
         })
         .is_some_and(|leftmost| leftmost <= menus_end)
+}
+
+/// Whether hiding the app menus can give the items room. Status items never
+/// go left of a notch, so menus that end left of it do not take their room;
+/// only menus that continue right of the notch do.
+pub fn menus_take_item_room(menus_end: f64, notch_right: Option<f64>) -> bool {
+    notch_right.is_none_or(|right| menus_end > right)
 }
 
 /// What the decision looks at.
@@ -68,6 +78,18 @@ pub fn menu_action(s: MenuSituation) -> MenuAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menus_left_of_the_notch_leave_the_items_their_room() {
+        // MenuCrowd on the development host: menus end at -252, the notch
+        // at -662.
+        assert!(menus_take_item_room(-252.0, Some(-662.0)));
+        // Arc's menus end left of the notch.
+        assert!(!menus_take_item_room(-906.0, Some(-662.0)));
+        assert!(!menus_take_item_room(-662.0, Some(-662.0)));
+        // No notch: the menus always compete with the items.
+        assert!(menus_take_item_room(-906.0, None));
+    }
 
     #[test]
     fn leftmost_item_decides() {

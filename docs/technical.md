@@ -454,16 +454,24 @@ the room:
 
 1. After every menu bar state change, the setting changes and Settings
    closing, ice-rust checks 200 ms and 600 ms later, once the items have
-   moved. Ice's test: the leftmost on-screen status item on the menu bar
-   with the ice-rust icon sits at or left of where the frontmost app's
-   menus end (`app_menus::items_reach_menus`, the same Accessibility read
-   as Show on click).
+   moved. Ice's test: the leftmost item on the menu bar with the ice-rust
+   icon sits at or left of where the frontmost app's menus end
+   (`app_menus::items_reach_menus`, the same Accessibility read as Show on
+   click). The items are the visible items, the shown sections and their
+   collapsed dividers at their laid-out positions from the full window
+   list: macOS 26 takes the items that collide with the app menus off
+   screen, so on-screen windows never reach the menus (L14 in
+   [design.md](design.md)). On a display with a notch the menus must also
+   continue right of the notch (`app_menus::menus_take_item_room`);
+   menus that end left of it do not take the items' room.
 2. If so, ice-rust remembers the app in front, hides every top-level item
-   of its own main menu, switches to a regular app and activates itself on
-   the next pass of the run loop (forced, since a click on a status item
-   does not make ice-rust active). The menu bar then shows only the Apple
-   menu, and macOS lays the items out in the freed space. ice-rust's icon
-   shows in the Dock meanwhile, as Ice's does.
+   of its own main menu, switches to a regular app and, on the next pass
+   of the run loop, asks to be activated from the app in front
+   (`activateFromApplication:options:`, as Ice does). Since macOS 14
+   activation is cooperative, and a plain or forced request from a
+   background app is refused. The menu bar then shows only the Apple menu,
+   and macOS lays the items out in the freed space. ice-rust's icon shows
+   in the Dock meanwhile, as Ice's does.
 3. It keeps the menus hidden while any section stays shown
    (`app_menus::menu_action`). Once every section hides, the setting goes
    off or Use Ice Bar comes on, its menus come back, it returns to an
@@ -471,6 +479,10 @@ the room:
 4. Switching to another app ends the hiding at once and leaves focus there.
    Opening Settings ends it too; Settings then gives focus back to the
    remembered app when it closes.
+
+When an app's menus already cover the ice-rust icon, show the items with
+Show on scroll (or Show on click in empty space, if any is left); the
+menus then hide and the icon is drawn again.
 
 While the menus are hidden, Show on click and Show on hover take the app
 menus to end 60 pt right of the menu bar's left edge, past the Apple menu

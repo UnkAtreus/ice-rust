@@ -1043,3 +1043,27 @@ built-in display and work normally once a large display has it.
 
 Not done: moving off-screen items without showing them, which Ice does
 through a private event relay.
+
+## L14: Hide app menus did not act (2026-10-15)
+
+Maintainer hand test with a test app, MenuCrowd (16 menus, ending at
+x = -252 on the built-in display, right of the notch at -662): nothing
+happened. Then a live test with synthetic scrolls over the menu bar
+(maintainer approved, idle guard before each step) and temporary stderr
+logging found two faults.
+
+| Fault | Evidence | Fix |
+|---|---|---|
+| The overlap test never fired. | Log: app menus end -252, but only 3 on-screen status items on the bar, leftmost -226. `probe`: the visible and hidden chains keep their laid-out positions (-619 to 0, contiguous) with `onscreen` false for every item left of -252, the icon and the hidden divider included. macOS 26 takes colliding status items off screen instead of drawing them under the menus. | Measure the laid-out positions from the full window list: the visible chain, plus each shown section's chain and collapsed divider. Also require, on a notched display, menus that end right of the notch (`menus_take_item_room`). |
+| Activation was refused. | After the first fix the log showed "hiding application menus" and `lsappinfo` reported ice-rust as Foreground, but MenuCrowd stayed in front. `activateIgnoringOtherApps` is cooperative since macOS 14; the scroll went to MenuCrowd, not to ice-rust. | `NSRunningApplication.current.activateFromApplication:options:` with the remembered front app, as Ice does ("activates itself from the frontmost app", evidence section 1). |
+
+Result after both fixes, same synthetic steps: a swipe down showed the
+hidden section, ice-rust became the active app, the menu bar showed only
+the Apple menu with every icon drawn (screenshot); a swipe up hid the items,
+MenuCrowd came back to the front with its menus and ice-rust returned to
+UIElement; switching to MenuCrowd while the menus were hidden ended the
+hiding at once with the items still shown. The pointer was put back
+afterwards.
+
+While MenuCrowd's menus cover the icon, the icon cannot be clicked; Show
+on scroll still shows the items, and the hiding then brings the icon back.
