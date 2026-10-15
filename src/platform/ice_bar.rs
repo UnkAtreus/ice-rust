@@ -207,6 +207,20 @@ impl IceBar {
         self.panel.isVisible()
     }
 
+    /// The panel's frame in AppKit space while it is visible.
+    pub fn frame(&self) -> Option<Rect> {
+        if !self.panel.isVisible() {
+            return None;
+        }
+        let f = self.panel.frame();
+        Some(Rect::new(
+            f.origin.x,
+            f.origin.y,
+            f.size.width,
+            f.size.height,
+        ))
+    }
+
     /// Fills the panel and orders it front without activating the app.
     /// `frame` is in AppKit space; slot frames are panel-local.
     pub fn show(

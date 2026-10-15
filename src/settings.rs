@@ -5,12 +5,18 @@ use std::time::Duration;
 
 use crate::menu_icon::IconStyle;
 use crate::model::REHIDE_INTERVAL;
+use crate::triggers::{HOVER_DELAY, MAX_HOVER_DELAY};
 
 pub const KEY_USE_ICE_BAR: &str = "UseIceBar";
 pub const KEY_AUTO_REHIDE: &str = "AutoRehide";
 pub const KEY_REHIDE_INTERVAL: &str = "RehideInterval";
 pub const KEY_AUTO_CHECK_UPDATES: &str = "AutomaticallyCheckForUpdates";
 pub const KEY_ICON_STYLE: &str = "IconStyle";
+/// Ice's key names for the menu bar triggers (v1.5).
+pub const KEY_SHOW_ON_CLICK: &str = "ShowOnClick";
+pub const KEY_SHOW_ON_HOVER: &str = "ShowOnHover";
+pub const KEY_SHOW_ON_HOVER_DELAY: &str = "ShowOnHoverDelay";
+pub const KEY_SHOW_ON_SCROLL: &str = "ShowOnScroll";
 pub const KEY_TINT_CUSTOM_ICON: &str = "TintCustomIcon";
 /// The custom icon as PNG data at 3x (v1.4). Not part of `Settings`: it is
 /// written once when the user chooses an image.
@@ -66,6 +72,14 @@ pub struct Settings {
     pub icon_style: IconStyle,
     /// Draw the custom icon in the menu bar's color, as a template image.
     pub tint_custom_icon: bool,
+    /// A click in empty menu bar space shows or hides items (v1.5).
+    pub show_on_click: bool,
+    /// The pointer resting in empty menu bar space shows items.
+    pub show_on_hover: bool,
+    /// How long the pointer rests before hovering acts.
+    pub hover_delay: Duration,
+    /// Scrolling or swiping over the menu bar shows or hides items.
+    pub show_on_scroll: bool,
 }
 
 impl Default for Settings {
@@ -77,6 +91,11 @@ impl Default for Settings {
             auto_check_updates: true,
             icon_style: IconStyle::default(),
             tint_custom_icon: true,
+            // Ice's defaults.
+            show_on_click: true,
+            show_on_hover: false,
+            hover_delay: HOVER_DELAY,
+            show_on_scroll: true,
         }
     }
 }
@@ -104,6 +123,13 @@ impl Settings {
                 .and_then(|key| IconStyle::from_key(&key))
                 .unwrap_or(defaults.icon_style),
             tint_custom_icon: get_bool(KEY_TINT_CUSTOM_ICON).unwrap_or(defaults.tint_custom_icon),
+            show_on_click: get_bool(KEY_SHOW_ON_CLICK).unwrap_or(defaults.show_on_click),
+            show_on_hover: get_bool(KEY_SHOW_ON_HOVER).unwrap_or(defaults.show_on_hover),
+            hover_delay: get_f64(KEY_SHOW_ON_HOVER_DELAY)
+                .filter(|s| s.is_finite() && (0.0..=MAX_HOVER_DELAY.as_secs_f64()).contains(s))
+                .map(Duration::from_secs_f64)
+                .unwrap_or(defaults.hover_delay),
+            show_on_scroll: get_bool(KEY_SHOW_ON_SCROLL).unwrap_or(defaults.show_on_scroll),
         }
     }
 }
@@ -211,6 +237,7 @@ mod store {
 
     use super::{
         KEY_AUTO_CHECK_UPDATES, KEY_AUTO_REHIDE, KEY_ICON_STYLE, KEY_REHIDE_INTERVAL,
+        KEY_SHOW_ON_CLICK, KEY_SHOW_ON_HOVER, KEY_SHOW_ON_HOVER_DELAY, KEY_SHOW_ON_SCROLL,
         KEY_TINT_CUSTOM_ICON, KEY_USE_ICE_BAR, SeedValue, Settings,
     };
 
@@ -249,6 +276,17 @@ mod store {
         defaults.setBool_forKey(
             settings.tint_custom_icon,
             &NSString::from_str(KEY_TINT_CUSTOM_ICON),
+        );
+        for (key, on) in [
+            (KEY_SHOW_ON_CLICK, settings.show_on_click),
+            (KEY_SHOW_ON_HOVER, settings.show_on_hover),
+            (KEY_SHOW_ON_SCROLL, settings.show_on_scroll),
+        ] {
+            defaults.setBool_forKey(on, &NSString::from_str(key));
+        }
+        defaults.setDouble_forKey(
+            settings.hover_delay.as_secs_f64(),
+            &NSString::from_str(KEY_SHOW_ON_HOVER_DELAY),
         );
     }
 
@@ -377,6 +415,43 @@ mod tests {
         );
         assert_eq!(s.icon_style, IconStyle::Eye);
         assert!(!s.tint_custom_icon);
+    }
+
+    #[test]
+    fn triggers_default_like_ice_and_follow_the_stored_values() {
+        let s = Settings::default();
+        assert!(s.show_on_click);
+        assert!(!s.show_on_hover);
+        assert!(s.show_on_scroll);
+        assert_eq!(s.hover_delay, Duration::from_millis(200));
+        let bools: HashMap<&str, bool> = [
+            (KEY_SHOW_ON_CLICK, false),
+            (KEY_SHOW_ON_HOVER, true),
+            (KEY_SHOW_ON_SCROLL, false),
+        ]
+        .into();
+        let nums: HashMap<&str, f64> = [(KEY_SHOW_ON_HOVER_DELAY, 0.5)].into();
+        let s = Settings::from_lookup(
+            |k| bools.get(k).copied(),
+            |k| nums.get(k).copied(),
+            |_| None,
+        );
+        assert!(!s.show_on_click);
+        assert!(s.show_on_hover);
+        assert!(!s.show_on_scroll);
+        assert_eq!(s.hover_delay, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn invalid_hover_delay_uses_default() {
+        for bad in [-0.1, 1.5, f64::NAN, f64::INFINITY] {
+            let nums: HashMap<&str, f64> = [(KEY_SHOW_ON_HOVER_DELAY, bad)].into();
+            let s = Settings::from_lookup(|_| None, |k| nums.get(k).copied(), |_| None);
+            assert_eq!(s.hover_delay, HOVER_DELAY, "value {bad}");
+        }
+        let nums: HashMap<&str, f64> = [(KEY_SHOW_ON_HOVER_DELAY, 0.0)].into();
+        let s = Settings::from_lookup(|_| None, |k| nums.get(k).copied(), |_| None);
+        assert_eq!(s.hover_delay, Duration::ZERO);
     }
 
     #[test]

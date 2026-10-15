@@ -947,3 +947,34 @@ given while ice-rust ran and no relaunch, or macOS 27 withholding status
 window titles from a process that has Screen Recording. Open; a reply asking
 the reporter to remove and re-add both entries and to send `probe --json`
 output is drafted but not posted.
+
+## v1.5: show on click, hover and scroll (maintainer request 2026-10-15)
+
+Request: implement Ice's "Show hidden items when hovering over the menu
+bar", "when an empty area in the menu bar is clicked" and "by scrolling or
+swiping in the menu bar".
+
+Ice's mechanism is in [ice-internals-evidence.md](ice-internals-evidence.md)
+section 6: universal (local plus global) NSEvent monitors for mouse down and
+scroll, a listen-only HID tap for mouse moves, and a four-part empty-space
+test (menu bar, outside the app menus from AX, outside item windows,
+outside the notch).
+
+| Part | Choice |
+|---|---|
+| Monitors | Local plus global `NSEvent` monitors per enabled switch: mouse down for click (and the hover latch), scroll wheel, mouse moved for hover. Ice uses a CGEventTap for mouse moves; an NSEvent monitor needs no tap and sees the same moves. Monitors are reinstalled when the switches change; none run for disabled triggers. |
+| Empty space | `triggers::is_empty_space`, pure, in CG space. The menu bar is the one with the ice-rust icon. App menus: the frame of the last child of the frontmost app's `AXMenuBar`, 0.1 s messaging timeout (`platform::menu_bar_space`). Items: on-screen layer-25 windows; the expanded dividers are not on screen (measured: `onscreen=false` for both while hidden). Notch: the gap between `auxiliaryTopLeftArea` and `auxiliaryTopRightArea`, plus 1 pt. |
+| Click | Left mouse down in empty space, after 50 ms: `toggle(Hidden)`, Option `toggle(AlwaysHidden)`; Shift, Control or Command do nothing. In Ice Bar mode an open bar closes through the existing outside-click monitor and the reopen guard. |
+| Scroll | `scroll_amount` signs the averaged deltas by `isDirectionInvertedFromDevice` (down or right positive, natural scrolling on or off) and counts wheel lines as 10 pt; `ScrollGesture` sums events less than 300 ms apart and acts once per gesture at +10 (show) or -10 (hide). Ice uses each event's raw average against 5. |
+| Hover | `triggers::Hover`, pure with injected time. A move schedules one check after the delay (0.2 s default, 0 to 1 s); the check re-tests precisely and does nothing while a menu is open. Only hover-shown items hide on leaving (outside the menu bar and 10 pt from the Ice Bar); `release()` on toggle, hide, close_bar, click-through and any click in the menu bar plays the role of Ice's `showOnHoverAllowed` latch. |
+| Settings | `ShowOnClick` (true), `ShowOnHover` (false), `ShowOnHoverDelay` (0.2), `ShowOnScroll` (true), Ice's keys and defaults. A new Hidden Items page holds them with Use Ice Bar and the rehide settings; General keeps the icon, launch at login and updates. |
+
+Measured on the development host (macOS 26.3, four displays, Arc in
+front): the AX read of every menu took 79 ms, of the last menu 25 ms; Arc's
+menus end at x=3166 on the display at x=2560; the built-in display's notch
+is CG (-847, 1080, 185, 32). Status items on the other displays are copies
+owned by Control Center, so the triggers act on the active menu bar only.
+
+Not done: Ice's secondary context menu on a Control-click in empty space;
+triggers while ice-rust itself is in front (its own AX menus are not read
+from its main thread).

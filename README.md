@@ -44,9 +44,15 @@ it (see [Differences from Ice](#differences-from-ice)).
   click on the icon opens a panel below the menu bar with an image of each
   hidden item. Clicking an image reveals that item's section and clicks the
   real item.
-- **Settings window.** General settings, a Menu Bar Layout page where you
-  drag items between the Visible, Hidden and Always-Hidden bars to move the
-  real items, a Permissions page and an About page.
+- **Show from the menu bar.** Click an empty part of the menu bar, or swipe
+  or scroll down over it, to show the hidden items; scroll up to hide them.
+  Show on hover (off by default) shows them while the pointer rests on an
+  empty part of the menu bar and hides them again when it leaves.
+- **Settings window.** A General page (icon, launch at login, updates), a
+  Hidden Items page (Ice Bar, show on click, hover and scroll, rehide), a
+  Menu Bar Layout page where you drag items between the Visible, Hidden and
+  Always-Hidden bars to move the real items, a Permissions page and an About
+  page.
 - **Auto-rehide.** A revealed section hides again after an idle interval
   (15 s by default, 5 to 60 s in Settings) while the pointer is outside the
   menu bar and no menu or panel is open.
@@ -75,9 +81,9 @@ of this repository.
 |---|---|---|---|
 | Hide menu bar items | Yes | Yes | |
 | "Always-hidden" menu bar section | Yes | Yes | Option-click the icon to show it. |
-| Show hidden items when hovering over the menu bar | Yes | No | |
-| Show hidden items when an empty area in the menu bar is clicked | Yes | No | |
-| Show hidden items by scrolling or swiping in the menu bar | Yes | No | |
+| Show hidden items when hovering over the menu bar | Yes | Yes | Off by default, delay 0 to 1 s. Hides again on leaving only items that hovering showed. Needs Accessibility. |
+| Show hidden items when an empty area in the menu bar is clicked | Yes | Yes | Option-click shows the always-hidden items. Needs Accessibility. |
+| Show hidden items by scrolling or swiping in the menu bar | Yes | Yes | Down or right shows, up or left hides, the same way with natural scrolling on or off. |
 | Automatically rehide menu bar items | Yes | Partial | Timed only (5 to 60 s), held while a menu or panel is open. Ice also has smart and focused-app strategies. |
 | Hide application menus when they overlap with shown items | Yes | No | |
 | Drag and drop interface to arrange individual items | Yes | Yes | Moves on-screen items only: the sections involved are revealed first. |
@@ -143,7 +149,6 @@ and its menu.
 Planned, in rough priority order. Nothing here is implemented yet.
 
 - [ ] Global hotkeys for the sections and the Ice Bar
-- [ ] Show hidden items on hover, on a click in empty menu bar space, and on scroll
 - [ ] Smart and focused-app rehide strategies
 - [ ] Horizontal scrolling in the Ice Bar instead of the "+N" tile
 - [ ] Search menu bar items
@@ -151,14 +156,20 @@ Planned, in rough priority order. Nothing here is implemented yet.
 ## Screenshots
 
 <p align="center">
-  <img src="docs/images/about.png" width="49%" alt="ice-rust Settings window, About page">
   <img src="docs/images/general.png" width="49%" alt="ice-rust Settings window, General page">
+  <img src="docs/images/hidden-items.png" width="49%" alt="ice-rust Settings window, Hidden Items page">
+</p>
+<p align="center">
+  <img src="docs/images/about.png" width="49%" alt="ice-rust Settings window, About page">
 </p>
 
-`ice-rust render-settings` drew both pages offscreen. With
-`--default-settings`, the General page shows the defaults: the ice-rust Logo
-icon, Use Ice Bar on, Automatically rehide on, rehide after 15 s. The offscreen render draws the
-track of a switch that is on in gray; the knob at the right marks it on.
+`ice-rust render-settings` drew the pages offscreen with `--default-settings`.
+The General page shows the ice-rust Logo icon. The Hidden Items page shows
+the defaults: Use Ice Bar on, Show on click on, Show on hover off with a
+0.2 s delay, Show on scroll on, Automatically rehide on, rehide after 15 s.
+The offscreen render draws the track of a switch that is on in gray; the
+knob at the right marks it on. It also draws the knob of a disabled slider
+at the left end.
 
 ## Requirements
 
@@ -236,8 +247,11 @@ return.
 | Click the icon | Shows or hides the hidden section. With Use Ice Bar on, opens or closes the Ice Bar with the hidden items. |
 | Option-click the icon | Shows or hides the always-hidden section; showing it shows everything. With Use Ice Bar on, opens the Ice Bar with the always-hidden items. |
 | Right-click or Control-click the icon | Opens the menu: Show/Hide Hidden Items, Show/Hide Always-Hidden Items, Use Ice Bar, Settings..., Arrange Menu Bar Items..., Check for Updates..., Quit ice-rust. |
+| Click an empty part of the menu bar | Same as clicking the icon (Show on click, on by default); Option-click for the always-hidden section. Needs Accessibility to tell empty space from the app's menus. |
+| Swipe or scroll over the menu bar | Down or right shows the hidden items, up or left hides them, once per gesture (Show on scroll, on by default). |
+| Rest the pointer on an empty part of the menu bar | Shows the hidden items after the hover delay (Show on hover, off by default); they hide again once the pointer leaves the menu bar and the Ice Bar, unless you clicked in the menu bar meanwhile. |
 | Click an image in the Ice Bar | Closes the bar, reveals the item's section, waits up to 1 s for the item to reach the screen, and clicks it. |
-| Settings... (Command-comma while the menu is open) | Opens the Settings window: General, Menu Bar Layout, Permissions, About. |
+| Settings... (Command-comma while the menu is open) | Opens the Settings window: General, Hidden Items, Menu Bar Layout, Permissions, About. |
 | Check for Updates... | Checks GitHub now, even with automatic checks off, and offers a newer version or says ice-rust is up to date. Also on the About page. |
 | Arrange Menu Bar Items... | Opens Settings on the Menu Bar Layout page. Drag a tile to a new place in any bar; ice-rust moves the real item and rebuilds the bars from the menu bar. |
 | Command-drag in the menu bar | Rearranges items with macOS's own drag. Keep the ice-rust icon right of both dividers; ice-rust refuses to hide while a divider sits right of the icon. |
@@ -319,8 +333,7 @@ and runtime observations.
 
 ## Differences from Ice
 
-- ice-rust has no global hotkeys, show on hover, show on click in empty menu
-  bar space, show on scroll, search, menu bar appearance settings, hiding of
+- ice-rust has no global hotkeys, search, menu bar appearance settings, hiding of
   application menus, or Ice's smart and focused-app rehide strategies. Its
   Settings window has no Hotkeys, Appearance or Updates pages.
 - Discovery uses only the public window list and window geometry. Ice uses
@@ -341,6 +354,18 @@ and runtime observations.
   for each style and defaults to Dot.
 - An always-hidden divider that ends up right of the hidden divider is
   reported on stderr and left in place. Ice moves it back.
+- Show on scroll follows the direction of the fingers or the wheel, with
+  natural scrolling on or off, and acts once per gesture after the scroll
+  adds up to 10 points. Ice compares each event's raw deltas with 5 points,
+  so its direction flips with natural scrolling and a slow swipe may not
+  count.
+- Show on hover hides on leaving only the items it showed itself; a click in
+  the menu bar takes them over, like Ice's latch. A Control-click in empty
+  menu bar space does nothing; Ice opens its secondary context menu there.
+- Show on click and Show on hover act only on the menu bar of the display
+  that has the ice-rust icon, and not while ice-rust itself is the frontmost
+  app (its Settings window in front), since its own menus cannot be read
+  from its main thread.
 
 ## Performance
 
@@ -463,7 +488,7 @@ Two subcommands check behavior without touching the menu bar:
 cargo run --release -- probe [--divider Ice.ControlItem.Hidden] [--out <dir>] [--json]
 
 # Draws a Settings page into a PNG without showing a window.
-cargo run --release -- render-settings --page <general|layout|permissions|about> --out page.png
+cargo run --release -- render-settings --page <general|hidden-items|layout|permissions|about> --out page.png
 ```
 
 `probe` posts no events, creates no status items and writes no defaults.

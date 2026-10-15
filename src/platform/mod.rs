@@ -8,6 +8,7 @@ pub mod ice_bar;
 pub mod installer;
 pub mod layout_pane;
 pub mod login_item;
+pub mod menu_bar_space;
 pub mod menu_icon;
 pub mod mover;
 pub mod permissions;

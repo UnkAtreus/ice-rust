@@ -40,6 +40,7 @@ use crate::menu_icon::IconStyle;
 use crate::model::{LAYOUT_REFRESH, PERMISSIONS_REFRESH, WindowId};
 use crate::sections::Section;
 use crate::settings::{Settings, UI_REHIDE_MAX_SECONDS, UI_REHIDE_MIN_SECONDS, ui_rehide_seconds};
+use crate::triggers::MAX_HOVER_DELAY;
 
 /// Default content size of the window, also its minimum (v1.2).
 pub const DEFAULT_SIZE: (f64, f64) = (820.0, 600.0);
@@ -79,17 +80,25 @@ pub trait SettingsHost {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     General,
+    HiddenItems,
     Layout,
     Permissions,
     About,
 }
 
 impl Page {
-    pub const ALL: [Page; 4] = [Page::General, Page::Layout, Page::Permissions, Page::About];
+    pub const ALL: [Page; 5] = [
+        Page::General,
+        Page::HiddenItems,
+        Page::Layout,
+        Page::Permissions,
+        Page::About,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             Page::General => "General",
+            Page::HiddenItems => "Hidden Items",
             Page::Layout => "Menu Bar Layout",
             Page::Permissions => "Permissions",
             Page::About => "About",
@@ -99,6 +108,7 @@ impl Page {
     fn symbol(self) -> &'static str {
         match self {
             Page::General => "gearshape",
+            Page::HiddenItems => "eye",
             Page::Layout => "menubar.rectangle",
             Page::Permissions => "lock.shield",
             Page::About => "info.circle",
@@ -109,6 +119,7 @@ impl Page {
     pub fn from_arg(name: &str) -> Option<Page> {
         match name {
             "general" => Some(Page::General),
+            "hidden-items" => Some(Page::HiddenItems),
             "layout" => Some(Page::Layout),
             "permissions" => Some(Page::Permissions),
             "about" => Some(Page::About),
@@ -234,11 +245,17 @@ impl SidebarRow {
     }
 }
 
+/// The controls of the General and Hidden Items pages.
 struct GeneralParts {
     icon_style: Retained<NSPopUpButton>,
     custom_note: Retained<NSTextField>,
     custom_tint: Retained<NSButton>,
     use_bar: Retained<NSSwitch>,
+    show_on_click: Retained<NSSwitch>,
+    show_on_hover: Retained<NSSwitch>,
+    hover_delay: Retained<NSSlider>,
+    hover_delay_value: Retained<NSTextField>,
+    show_on_scroll: Retained<NSSwitch>,
     auto_rehide: Retained<NSSwitch>,
     interval: Retained<NSSlider>,
     interval_value: Retained<NSTextField>,
@@ -296,6 +313,15 @@ fn switch_state(on: bool) -> isize {
 
 fn seconds_text(seconds: f64) -> String {
     format!("{} s", seconds.round() as i64)
+}
+
+fn tenths_text(seconds: f64) -> String {
+    format!("{seconds:.1} s")
+}
+
+/// A hover delay slider value rounded to tenths of a second, in range.
+fn ui_hover_delay(seconds: f64) -> f64 {
+    ((seconds * 10.0).round() / 10.0).clamp(0.0, MAX_HOVER_DELAY.as_secs_f64())
 }
 
 fn open_url(url: &str) {
@@ -400,10 +426,17 @@ impl SettingsWindow {
             );
             let page_width = content_width - 2.0 * MARGIN;
 
-            // General.
+            // General and Hidden Items.
             let general_view = FlippedView::new(mtm, page_frame);
-            let general =
-                build_general(mtm, &general_view, page_width, &settings, me, &mut targets);
+            let hidden_view = FlippedView::new(mtm, page_frame);
+            let general = build_general(
+                mtm,
+                [&general_view, &hidden_view],
+                page_width,
+                &settings,
+                me,
+                &mut targets,
+            );
 
             // Menu Bar Layout.
             let layout_view = FlippedView::new(mtm, page_frame);
@@ -420,6 +453,7 @@ impl SettingsWindow {
 
             let pages = vec![
                 (Page::General, general_view),
+                (Page::HiddenItems, hidden_view),
                 (Page::Layout, layout_view),
                 (Page::Permissions, permissions_view),
                 (Page::About, about_view),
@@ -493,7 +527,7 @@ impl SettingsWindow {
             Page::Layout if self.canvas.is_idle() => self.reload_layout(),
             Page::Layout => {}
             Page::Permissions => self.refresh_permissions(),
-            Page::General => self.sync_general(),
+            Page::General | Page::HiddenItems => self.sync_general(),
             Page::About => self.refresh_update_status(),
         }
     }
@@ -583,6 +617,21 @@ impl SettingsWindow {
             .interval_value
             .setStringValue(&NSString::from_str(&seconds_text(seconds)));
         self.general.interval.setEnabled(s.auto_rehide);
+        self.general
+            .show_on_click
+            .setState(switch_state(s.show_on_click));
+        self.general
+            .show_on_hover
+            .setState(switch_state(s.show_on_hover));
+        self.general
+            .show_on_scroll
+            .setState(switch_state(s.show_on_scroll));
+        let delay = s.hover_delay.as_secs_f64();
+        self.general.hover_delay.setDoubleValue(delay);
+        self.general
+            .hover_delay_value
+            .setStringValue(&NSString::from_str(&tenths_text(delay)));
+        self.general.hover_delay.setEnabled(s.show_on_hover);
         self.general
             .auto_updates
             .setState(switch_state(s.auto_check_updates));
@@ -742,11 +791,21 @@ impl SettingsWindow {
     }
 
     /// Reads the controls into settings, saves and applies them. The
-    /// interval is read only when the slider moved, so a stored value
-    /// outside the slider's range survives changes to the switches.
+    /// interval is read only when its slider moved, so a stored value
+    /// outside the slider's range survives changes to the switches. The
+    /// hover delay slider covers every accepted value.
     fn general_changed(&self, slider_moved: bool) {
         let mut s = self.host.settings();
         s.use_ice_bar = self.general.use_bar.state() == NSControlStateValueOn;
+        s.show_on_click = self.general.show_on_click.state() == NSControlStateValueOn;
+        s.show_on_hover = self.general.show_on_hover.state() == NSControlStateValueOn;
+        s.show_on_scroll = self.general.show_on_scroll.state() == NSControlStateValueOn;
+        let delay = ui_hover_delay(self.general.hover_delay.doubleValue());
+        s.hover_delay = Duration::from_secs_f64(delay);
+        self.general
+            .hover_delay_value
+            .setStringValue(&NSString::from_str(&tenths_text(delay)));
+        self.general.hover_delay.setEnabled(s.show_on_hover);
         s.auto_rehide = self.general.auto_rehide.state() == NSControlStateValueOn;
         s.auto_check_updates = self.general.auto_updates.state() == NSControlStateValueOn;
         s.icon_style = self.selected_style();
@@ -1003,25 +1062,70 @@ fn separator(mtm: MainThreadMarker, parent: &NSView, y: f64, width: f64) {
     add(parent, &line, Follow::Width);
 }
 
+/// A title, a detail line and a switch at the right, in `group` at `y`.
+fn switch_row(
+    mtm: MainThreadMarker,
+    group: &NSView,
+    (title, detail): (&str, &str),
+    y: f64,
+    width: f64,
+    on: bool,
+) -> Retained<NSSwitch> {
+    row_text(mtm, group, title, detail, 16.0, y + 11.0, width - 100.0);
+    let switch = NSSwitch::initWithFrame(
+        NSSwitch::alloc(mtm),
+        rect(width - 58.0, y + 16.0, 42.0, 24.0),
+    );
+    switch.setState(switch_state(on));
+    add(group, &switch, Follow::Right);
+    switch
+}
+
+/// A title, a detail line, a slider and its value at the right, in
+/// `group` at `y`.
+fn slider_row(
+    mtm: MainThreadMarker,
+    group: &NSView,
+    (title, detail): (&str, &str),
+    y: f64,
+    width: f64,
+    (value, min, max): (f64, f64, f64),
+    text: &str,
+) -> (Retained<NSSlider>, Retained<NSTextField>) {
+    row_text(mtm, group, title, detail, 16.0, y + 11.0, width - 240.0);
+    // SAFETY: no target or action yet; the caller attaches both.
+    let slider = unsafe {
+        NSSlider::sliderWithValue_minValue_maxValue_target_action(value, min, max, None, None, mtm)
+    };
+    slider.setFrame(rect(width - 216.0, y + 18.0, 150.0, 20.0));
+    slider.setContinuous(true);
+    add(group, &slider, Follow::Right);
+    let value_label = label(
+        mtm,
+        text,
+        rect(width - 58.0, y + 19.0, 44.0, 17.0),
+        13.0,
+        Weight::Regular,
+        &NSColor::secondaryLabelColor(),
+    );
+    value_label.setAlignment(NSTextAlignment::Right);
+    add(group, &value_label, Follow::Right);
+    (slider, value_label)
+}
+
+/// Builds the General page (the menu bar icon, launch at login, updates)
+/// and the Hidden Items page (Ice Bar, show on click, hover and scroll,
+/// rehide) into `general_page` and `hidden_page`.
 fn build_general(
     mtm: MainThreadMarker,
-    page: &NSView,
+    [general_page, hidden_page]: [&NSView; 2],
     width: f64,
     settings: &Settings,
     me: &Weak<SettingsWindow>,
     targets: &mut Vec<Retained<ActionTarget>>,
 ) -> GeneralParts {
     const ROW: f64 = 56.0;
-    let (icon_style, custom_note, custom_tint) =
-        build_icon_group(mtm, page, width, ROW, settings, me, targets);
-
-    let first = 8.0 + 2.0 * ROW + 16.0;
-    let group = RoundedBox::new(mtm, rect(MARGIN, first, width, 3.0 * ROW), BoxStyle::Group);
-    add(page, &group, Follow::Width);
-    // Rows with a switch leave room for it; the slider row for the slider.
     let text_width = width - 100.0;
-    let slider_text_width = width - 240.0;
-
     let changed = |slider_moved: bool| {
         let me = me.clone();
         move |_: &AnyObject| {
@@ -1031,86 +1135,14 @@ fn build_general(
         }
     };
 
-    row_text(
-        mtm,
-        &group,
-        "Use Ice Bar",
-        "Show hidden items in a bar below the menu bar",
-        16.0,
-        11.0,
-        text_width,
-    );
-    let use_bar =
-        NSSwitch::initWithFrame(NSSwitch::alloc(mtm), rect(width - 58.0, 16.0, 42.0, 24.0));
-    use_bar.setState(switch_state(settings.use_ice_bar));
-    add(&group, &use_bar, Follow::Right);
-    separator(mtm, &group, ROW, width);
+    // General: the menu bar icon (v1.4).
+    let (icon_style, custom_note, custom_tint) =
+        build_icon_group(mtm, general_page, width, ROW, settings, me, targets);
 
-    row_text(
-        mtm,
-        &group,
-        "Automatically rehide",
-        "Hide shown items again while the pointer is away from the menu bar",
-        16.0,
-        ROW + 11.0,
-        text_width,
-    );
-    let auto_rehide = NSSwitch::initWithFrame(
-        NSSwitch::alloc(mtm),
-        rect(width - 58.0, ROW + 16.0, 42.0, 24.0),
-    );
-    auto_rehide.setState(switch_state(settings.auto_rehide));
-    add(&group, &auto_rehide, Follow::Right);
-    separator(mtm, &group, 2.0 * ROW, width);
-
-    row_text(
-        mtm,
-        &group,
-        "Rehide after",
-        "Idle time before shown items hide again",
-        16.0,
-        2.0 * ROW + 11.0,
-        slider_text_width,
-    );
-    let seconds = ui_rehide_seconds(settings.rehide_interval);
-    // SAFETY: no target or action yet; both are set by `attach` below.
-    let interval = unsafe {
-        NSSlider::sliderWithValue_minValue_maxValue_target_action(
-            seconds,
-            UI_REHIDE_MIN_SECONDS,
-            UI_REHIDE_MAX_SECONDS,
-            None,
-            None,
-            mtm,
-        )
-    };
-    interval.setFrame(rect(width - 216.0, 2.0 * ROW + 18.0, 150.0, 20.0));
-    interval.setContinuous(true);
-    interval.setEnabled(settings.auto_rehide);
-    add(&group, &interval, Follow::Right);
-    let interval_value = label(
-        mtm,
-        &seconds_text(seconds),
-        rect(width - 58.0, 2.0 * ROW + 19.0, 44.0, 17.0),
-        13.0,
-        Weight::Regular,
-        &NSColor::secondaryLabelColor(),
-    );
-    interval_value.setAlignment(NSTextAlignment::Right);
-    add(&group, &interval_value, Follow::Right);
-
-    let controls: [(&NSControl, bool); 3] =
-        [(&use_bar, false), (&auto_rehide, false), (&interval, true)];
-    for (control, slider_moved) in controls {
-        let target = ActionTarget::new(mtm, changed(slider_moved));
-        target.attach(control);
-        targets.push(target);
-    }
-
-    // Launch at login and updates (v1.3).
-    let top = first + 3.0 * ROW + 16.0;
+    // General: launch at login and updates (v1.3).
+    let top = 8.0 + 2.0 * ROW + 16.0;
     let system = RoundedBox::new(mtm, rect(MARGIN, top, width, 2.0 * ROW), BoxStyle::Group);
-    add(page, &system, Follow::Width);
+    add(general_page, &system, Follow::Width);
     add(
         &system,
         &label(
@@ -1147,26 +1179,128 @@ fn build_general(
     let login = NSSwitch::initWithFrame(NSSwitch::alloc(mtm), rect(width - 58.0, 16.0, 42.0, 24.0));
     add(&system, &login, Follow::Right);
     separator(mtm, &system, ROW, width);
-
-    row_text(
+    let auto_updates = switch_row(
         mtm,
         &system,
-        "Automatically check for updates",
-        "Check GitHub for a new version once a day",
-        16.0,
-        ROW + 11.0,
-        text_width,
+        (
+            "Automatically check for updates",
+            "Check GitHub for a new version once a day",
+        ),
+        ROW,
+        width,
+        settings.auto_check_updates,
     );
-    let auto_updates = NSSwitch::initWithFrame(
-        NSSwitch::alloc(mtm),
-        rect(width - 58.0, ROW + 16.0, 42.0, 24.0),
-    );
-    auto_updates.setState(switch_state(settings.auto_check_updates));
-    add(&system, &auto_updates, Follow::Right);
 
-    let target = ActionTarget::new(mtm, changed(false));
-    target.attach(&auto_updates);
-    targets.push(target);
+    // Hidden Items: how hidden items show (v1.5).
+    let show = RoundedBox::new(mtm, rect(MARGIN, 8.0, width, 5.0 * ROW), BoxStyle::Group);
+    add(hidden_page, &show, Follow::Width);
+    let use_bar = switch_row(
+        mtm,
+        &show,
+        (
+            "Use Ice Bar",
+            "Show hidden items in a bar below the menu bar",
+        ),
+        0.0,
+        width,
+        settings.use_ice_bar,
+    );
+    separator(mtm, &show, ROW, width);
+    let show_on_click = switch_row(
+        mtm,
+        &show,
+        (
+            "Show on click",
+            "Click an empty part of the menu bar to show or hide hidden items",
+        ),
+        ROW,
+        width,
+        settings.show_on_click,
+    );
+    separator(mtm, &show, 2.0 * ROW, width);
+    let show_on_hover = switch_row(
+        mtm,
+        &show,
+        (
+            "Show on hover",
+            "Show hidden items while the pointer rests on an empty part of the menu bar",
+        ),
+        2.0 * ROW,
+        width,
+        settings.show_on_hover,
+    );
+    separator(mtm, &show, 3.0 * ROW, width);
+    let delay = settings.hover_delay.as_secs_f64();
+    let (hover_delay, hover_delay_value) = slider_row(
+        mtm,
+        &show,
+        (
+            "Hover delay",
+            "How long the pointer rests before items show or hide",
+        ),
+        3.0 * ROW,
+        width,
+        (delay, 0.0, MAX_HOVER_DELAY.as_secs_f64()),
+        &tenths_text(delay),
+    );
+    hover_delay.setEnabled(settings.show_on_hover);
+    separator(mtm, &show, 4.0 * ROW, width);
+    let show_on_scroll = switch_row(
+        mtm,
+        &show,
+        (
+            "Show on scroll",
+            "Swipe or scroll down over the menu bar to show hidden items, up to hide them",
+        ),
+        4.0 * ROW,
+        width,
+        settings.show_on_scroll,
+    );
+
+    // Hidden Items: rehide.
+    let top = 8.0 + 5.0 * ROW + 16.0;
+    let rehide = RoundedBox::new(mtm, rect(MARGIN, top, width, 2.0 * ROW), BoxStyle::Group);
+    add(hidden_page, &rehide, Follow::Width);
+    let auto_rehide = switch_row(
+        mtm,
+        &rehide,
+        (
+            "Automatically rehide",
+            "Hide shown items again while the pointer is away from the menu bar",
+        ),
+        0.0,
+        width,
+        settings.auto_rehide,
+    );
+    separator(mtm, &rehide, ROW, width);
+    let seconds = ui_rehide_seconds(settings.rehide_interval);
+    let (interval, interval_value) = slider_row(
+        mtm,
+        &rehide,
+        ("Rehide after", "Idle time before shown items hide again"),
+        ROW,
+        width,
+        (seconds, UI_REHIDE_MIN_SECONDS, UI_REHIDE_MAX_SECONDS),
+        &seconds_text(seconds),
+    );
+    interval.setEnabled(settings.auto_rehide);
+
+    let controls: [(&NSControl, bool); 9] = [
+        (&use_bar, false),
+        (&show_on_click, false),
+        (&show_on_hover, false),
+        (&hover_delay, false),
+        (&show_on_scroll, false),
+        (&auto_rehide, false),
+        (&interval, true),
+        (&auto_updates, false),
+        (&custom_tint, false),
+    ];
+    for (control, slider_moved) in controls {
+        let target = ActionTarget::new(mtm, changed(slider_moved));
+        target.attach(control);
+        targets.push(target);
+    }
     let me_login = me.clone();
     let target = ActionTarget::new(mtm, move |_| {
         if let Some(w) = me_login.upgrade() {
@@ -1180,12 +1314,14 @@ fn build_general(
     targets.push(target);
 
     add(
-        page,
+        hidden_page,
         &wrapping_label(
             mtm,
-            "Click the ice-rust icon to show hidden items. Option-click it to show the \
-             always-hidden items too. Right-click or Control-click it for the menu.",
-            rect(MARGIN + 4.0, top + 2.0 * ROW + 14.0, width - 8.0, 36.0),
+            "Click the ice-rust icon or an empty part of the menu bar to show hidden items; \
+             Option-click either to show the always-hidden items too. Right-click or \
+             Control-click the icon for the menu. Show on click and Show on hover need \
+             Accessibility to tell empty space from the app's menus.",
+            rect(MARGIN + 4.0, top + 2.0 * ROW + 14.0, width - 8.0, 52.0),
             11.0,
             &NSColor::secondaryLabelColor(),
         ),
@@ -1197,6 +1333,11 @@ fn build_general(
         custom_note,
         custom_tint,
         use_bar,
+        show_on_click,
+        show_on_hover,
+        hover_delay,
+        hover_delay_value,
+        show_on_scroll,
         auto_rehide,
         interval,
         interval_value,
@@ -1309,7 +1450,6 @@ fn build_icon_group(
     };
     attach(&icon_style, SettingsWindow::icon_style_changed);
     attach(&choose, SettingsWindow::choose_custom_icon);
-    attach(&custom_tint, |w| w.general_changed(false));
     (icon_style, custom_note, custom_tint)
 }
 
@@ -1409,7 +1549,7 @@ fn build_permissions(
         (
             Permission::Accessibility,
             "Accessibility",
-            "Clicks and moves menu bar items",
+            "Clicks and moves items, finds empty menu bar space",
         ),
     ];
     let mut out = Vec::new();

@@ -15,7 +15,7 @@ const USAGE: &str = "\
 usage:
   ice-rust                  run the menu bar app
   ice-rust probe [--divider <autosave-title>] [--out <dir>] [--json]
-  ice-rust render-settings --page <general|layout|permissions|about> --out <png>
+  ice-rust render-settings --page <general|hidden-items|layout|permissions|about> --out <png>
                            [--width W --height H] [--divider-prefix <prefix>]
                            [--default-settings]
   ice-rust check-update [--json]
@@ -45,7 +45,7 @@ prints the public key to build in; update-sign writes <zip>.sig;
 update-verify checks <zip>.sig against the key built into this binary.";
 
 /// Page names `render-settings` accepts.
-const PAGES: [&str; 4] = ["general", "layout", "permissions", "about"];
+const PAGES: [&str; 5] = ["general", "hidden-items", "layout", "permissions", "about"];
 /// Default Settings window content size.
 const DEFAULT_RENDER_SIZE: (f64, f64) = (820.0, 600.0);
 
@@ -879,6 +879,16 @@ mod tests {
                 default_settings: true,
             }))
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_page_name_opens_its_page() {
+        use ice_rust::platform::settings_window::Page;
+        assert_eq!(PAGES.len(), Page::ALL.len());
+        for (name, page) in PAGES.iter().zip(Page::ALL) {
+            assert_eq!(Page::from_arg(name), Some(page), "{name}");
+        }
     }
 
     #[test]

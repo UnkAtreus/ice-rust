@@ -28,11 +28,12 @@ on: macOS 26.3 on Apple Silicon, with four displays.
 8. [Synthetic input without blocking](#synthetic-input-without-blocking)
 9. [Probe](#probe)
 10. [Render a Settings page](#render-a-settings-page)
-11. [How hidden items are found](#how-hidden-items-are-found)
-12. [Stored settings and item placement](#stored-settings-and-item-placement)
-13. [Window captures on macOS 26](#window-captures-on-macos-26)
-14. [Limitations and differences from Ice](#limitations-and-differences-from-ice)
-15. [Verification history](#verification-history)
+11. [Show on click, hover and scroll (v1.5)](#show-on-click-hover-and-scroll-v15)
+12. [How hidden items are found](#how-hidden-items-are-found)
+13. [Stored settings and item placement](#stored-settings-and-item-placement)
+14. [Window captures on macOS 26](#window-captures-on-macos-26)
+15. [Limitations and differences from Ice](#limitations-and-differences-from-ice)
+16. [Verification history](#verification-history)
 
 ## Behavior
 
@@ -72,8 +73,8 @@ on: macOS 26.3 on Apple Silicon, with four displays.
 The logic lives in pure modules with unit tests and no macOS dependencies:
 `model`, `geometry`, `chain`, `sections`, `arrange`, `bar_layout`,
 `bar_scroll`, `rehide`, `input_tag`, `worker`, `image_check`, `brand` (the
-embedded artwork), `menu_icon` (the icon styles), and the defaults half of
-`settings`. The macOS glue is under `src/platform/` and
+embedded artwork), `menu_icon` (the icon styles), `triggers` (show on
+click, hover and scroll), and the defaults half of `settings`. The macOS glue is under `src/platform/` and
 compiles only on macOS. The binary (`src/main.rs`) parses the command line
 and dispatches to the menu bar app, `probe` or `render-settings`.
 
@@ -183,7 +184,7 @@ under Custom image.
 | Permission | Needed for | API |
 |---|---|---|
 | Screen Recording | Reading other processes' window titles (to find the divider) and capturing item images | `CGPreflightScreenCaptureAccess`, `CGRequestScreenCaptureAccess` |
-| Accessibility / event posting | Clicking the real item after a click in the Ice Bar, and moving items from the Menu Bar Layout pane | `CGPreflightPostEventAccess`, `CGRequestPostEventAccess`, `AXIsProcessTrustedWithOptions` |
+| Accessibility / event posting | Clicking the real item after a click in the Ice Bar, moving items from the Menu Bar Layout pane, and reading where the frontmost app's menus end for Show on click and Show on hover | `CGPreflightPostEventAccess`, `CGRequestPostEventAccess`, `AXIsProcessTrustedWithOptions`, `AXUIElementCopyAttributeValue` |
 
 On macOS 26 every status item window, including ice-rust's own, belongs to
 Control Center, so even finding its own divider by title needs Screen
@@ -220,9 +221,14 @@ the page title sits in the title bar area. The window is resizable down to
 bars stretch.
 
 - General: Menu bar icon and Custom image (v1.4, see
-  [Icon styles](#icon-styles-v14)), Use Ice Bar, Automatically rehide, Rehide
-  after (5 to 60 s), Launch at login and Automatically check for updates
-  (v1.3). Changes are saved and applied at once.
+  [Icon styles](#icon-styles-v14)), Launch at login and Automatically check
+  for updates (v1.3). Changes are saved and applied at once.
+- Hidden Items (v1.5): Use Ice Bar, Show on click, Show on hover, Hover delay
+  (0 to 1 s in tenths), Show on scroll, Automatically rehide and Rehide after
+  (5 to 60 s), and a note on clicking the icon or empty menu bar space. See
+  [Show on click, hover and scroll](#show-on-click-hover-and-scroll-v15).
+  Changes are saved and applied at once; the event monitors follow the
+  switches.
 - Menu Bar Layout: "Drag to arrange your menu bar items", a tip about
   Command-dragging in the menu bar, and three bars (Visible, Hidden,
   Always-Hidden Section) filled with the sampled menu bar color, or light or
@@ -377,7 +383,7 @@ left edge, in the same order.
 ## Render a Settings page
 
 ```
-ice-rust render-settings --page <general|layout|permissions|about> --out <png>
+ice-rust render-settings --page <general|hidden-items|layout|permissions|about> --out <png>
                          [--width W --height H] [--divider-prefix <prefix>]
                          [--default-settings]
 ```
@@ -405,6 +411,36 @@ cargo build --release
 ./target/release/ice-rust render-settings --page about --out docs/images/about.png
 ./target/release/ice-rust render-settings --page general --default-settings --out docs/images/general.png
 ```
+
+## Show on click, hover and scroll (v1.5)
+
+Like Ice, ice-rust shows the hidden items from the menu bar itself. Each
+switch on the Hidden Items page installs a pair of `NSEvent` monitors with
+the same mask, a global one for events sent to other apps and a local one
+for events sent to ice-rust (Ice's "universal" monitor). Our own synthetic
+clicks and drags (the move engine, click-through) are ignored.
+
+Empty menu bar space (`triggers::is_empty_space`) is inside the menu bar of
+the display with the ice-rust icon (`geometry::menu_bar_display`), right of
+the frontmost app's menus, outside every on-screen status item window (an
+expanded divider is not on screen) and outside the notch plus 1 pt. Where
+the app menus end comes from the Accessibility API: the `AXMenuBar` of the
+frontmost app, the frame of its last child (`platform::menu_bar_space`),
+with a 0.1 s messaging timeout so a hung app cannot stall the main thread
+for long. The last menu only takes four requests; reading every menu of a
+browser took 79 ms on the development host, the last one 25 ms. Menus on
+another display, a failed request (no Accessibility) or ice-rust itself in
+front (its own menus cannot be read from its main thread) leave nothing
+empty.
+
+| Trigger | Monitor | Behavior |
+|---|---|---|
+| Show on click (on) | left and right mouse down | A left click in empty space acts like a click on the icon 50 ms later: plain shows or hides the hidden section, Option the always-hidden section; other modifiers do nothing. In Ice Bar mode it opens or closes the Ice Bar. Any click in the menu bar also takes hover-shown items over. |
+| Show on scroll (on) | scroll wheel | `(dx + dy) / 2`, signed by `isDirectionInvertedFromDevice` so that down or right is positive with natural scrolling on or off, and with wheel lines counted as 10 points, is summed over a gesture (events less than 300 ms apart). The first time the sum reaches +10 the hidden items show, at -10 they hide; the rest of the gesture does nothing. Only a gesture that starts over the menu bar counts; empty space is not required. |
+| Show on hover (off) | mouse moved | On each move a cheap test (the cached menu bar rectangle, re-read at most every 2 s) feeds `triggers::Hover`. With every section hidden and the pointer in the menu bar, a check runs after the hover delay: if the pointer is in empty space and no menu is open, the hidden items show. Items that hovering showed hide again, after the same delay, once the pointer is outside the menu bar and more than 10 pt from the Ice Bar. Anything else that shows or hides items, or a click in the menu bar, takes them over, and leaving no longer hides them. |
+
+Hover checks reuse the app menus' end for up to 2 s per frontmost app; a
+click reads it again.
 
 ## How hidden items are found
 
@@ -450,6 +486,10 @@ Stored in the process's standard user defaults:
 | `AutomaticallyCheckForUpdates` | true | Daily update checks (v1.3) |
 | `IconStyle` | `ice` | Icon style (v1.4): `ice`, `dot`, `ellipsis`, `ellipsis-circle`, `chevron`, `arrow`, `eye`, `door`, `sunglasses`, `snowflake`, `grid`, `star` or `custom`; an unknown value means `ice` |
 | `TintCustomIcon` | true | Draw the custom image in the menu bar's text color |
+| `ShowOnClick` | true | A click in empty menu bar space shows or hides items (v1.5) |
+| `ShowOnHover` | false | The pointer resting in empty menu bar space shows items |
+| `ShowOnHoverDelay` | 0.2 | Seconds the pointer rests before hovering acts (0 to 1; another value means 0.2) |
+| `ShowOnScroll` | true | Scrolling or swiping over the menu bar shows or hides items |
 | `CustomIconImage` | absent | The custom image as PNG data, fitted to 24 x 18 pt at 3x |
 | `LastUpdateCheck` | absent | Seconds since 1970 of the last successful update check |
 | `SkippedUpdateVersion` | absent | Version that "Skip This Version" set; automatic checks do not offer it |
@@ -561,10 +601,15 @@ menu bar items.
 
 ## Limitations and differences from Ice
 
-- Out of scope: global hotkeys, show on hover, show on click in empty menu
-  bar space, show on scroll, menu bar appearance, search, hiding application
-  menus, and Ice's smart and focused-app rehide strategies. The Settings
-  window has no Hotkeys, Appearance or Updates pages.
+- Out of scope: global hotkeys, menu bar appearance, search, hiding
+  application menus, and Ice's smart and focused-app rehide strategies. The
+  Settings window has no Hotkeys, Appearance or Updates pages.
+- Show on click and Show on hover need Accessibility to find where the app
+  menus end, act only on the menu bar of the display with the ice-rust icon,
+  and do nothing while ice-rust itself is in front. Show on scroll is
+  signed by the gesture's physical direction and sums each gesture; Ice uses
+  raw per-event deltas. A Control-click in empty space does nothing; Ice
+  opens its secondary context menu.
 - The move engine moves only on-screen items: it shows the sections a move
   touches first. Ice moves off-screen items through a private event relay.
   The move timings and drop offsets are starting values; live runs moved

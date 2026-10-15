@@ -51,6 +51,9 @@ use crate::rehide::{Activity, Decision, Rehide};
 use crate::sections::{MenuBarState, Section};
 use crate::settings::{self, KEY_CUSTOM_ICON_IMAGE, Settings};
 
+mod triggers;
+use triggers::Triggers;
+
 /// Ignore a reopen request this soon after a click outside closed the bar,
 /// since that click may have been on the icon itself.
 const REOPEN_GUARD: Duration = Duration::from_millis(300);
@@ -251,6 +254,8 @@ struct Controller {
     /// When and for which section a click outside closed the bar.
     bar_closed: Cell<Option<(Instant, Section)>>,
     outside_monitor: RefCell<Option<Retained<AnyObject>>>,
+    /// Show on click, hover and scroll (v1.5).
+    triggers: Triggers,
     settle_timer: RefCell<Option<Retained<NSTimer>>>,
     tick_timer: RefCell<Option<Retained<NSTimer>>>,
     observers: RefCell<Vec<Observer>>,
@@ -414,6 +419,7 @@ impl Controller {
                 previous_app: RefCell::new(None),
                 bar_closed: Cell::new(None),
                 outside_monitor: RefCell::new(None),
+                triggers: Triggers::default(),
                 settle_timer: RefCell::new(None),
                 tick_timer: RefCell::new(None),
                 observers: RefCell::new(Vec::new()),
@@ -447,6 +453,7 @@ impl Controller {
         );
         self.observe(&NSNotificationCenter::defaultCenter(), screens_changed);
         self.observe_termination();
+        self.install_triggers();
 
         // Keeps the About page's update status current while it is open.
         let me = self.me.clone();
@@ -578,6 +585,7 @@ impl Controller {
     /// section (which shows everything). In Ice Bar mode both open the bar
     /// with that section's items instead.
     fn toggle(&self, section: Section) {
+        self.triggers.release_hover();
         self.rehide.borrow_mut().reset(Instant::now());
         let use_bar = self.settings.borrow().use_ice_bar;
         if self.bar.is_visible() {
@@ -628,6 +636,14 @@ impl Controller {
         {
             self.refresh_icon();
         }
+        if (
+            previous.show_on_click,
+            previous.show_on_hover,
+            previous.show_on_scroll,
+        ) != (next.show_on_click, next.show_on_hover, next.show_on_scroll)
+        {
+            self.install_triggers();
+        }
     }
 
     /// Stores a newly chosen custom image and switches the icon to it, with
@@ -673,6 +689,7 @@ impl Controller {
 
     /// Hides both sections. Rehide comes through here too.
     fn hide(&self) {
+        self.triggers.release_hover();
         self.rehide.borrow_mut().hide();
         self.apply_state(MenuBarState::AllHidden);
     }
@@ -935,6 +952,7 @@ impl Controller {
     }
 
     fn close_bar(&self) {
+        self.triggers.release_hover();
         if let Some(monitor) = self.outside_monitor.borrow_mut().take() {
             // SAFETY: `monitor` was returned by addGlobalMonitorForEvents and
             // has not been removed yet.
@@ -981,6 +999,8 @@ impl Controller {
     /// so the click waits for it to end, and the wait starts over then.
     fn click_through(&self, id: WindowId) {
         let section = self.bar_section.get();
+        // close_bar releases hover: the revealed section stays when the
+        // pointer leaves the menu bar.
         self.close_bar();
         self.reveal(section);
         if !permissions::check().can_post_events() {

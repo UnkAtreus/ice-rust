@@ -16,6 +16,7 @@ pub mod model;
 pub mod rehide;
 pub mod sections;
 pub mod settings;
+pub mod triggers;
 pub mod update;
 pub mod worker;
 
