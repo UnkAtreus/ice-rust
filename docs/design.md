@@ -918,9 +918,20 @@ Fix (0.1.5):
 | Updater | Unchanged: `codesign --verify --strict` accepts the certificate-signed bundle. |
 
 Moving from 0.1.4 or earlier to 0.1.5 still needs one removal and new
-grant, since the stored requirements are cdhashes. Not yet verified: TCC
-keeping a live grant across two certificate-signed builds. That needs a
-grant to a certificate-signed build first.
+grant, since the stored requirements are cdhashes.
+
+Live test (2026-10-15, macOS 26.3, maintainer approved): dist/IceRust.app
+was rebuilt with the certificate (cdhash `0980e178...`). A second build, the
+0.1.4 binary signed with the same certificate (cdhash `702f45b2...`), served
+as the next version. Its `probe --json`, launched with `open`, reported all
+three permissions false and unreadable titles while the rows still held the
+old cdhash. The maintainer removed both entries, opened the dist build,
+granted both and relaunched it; both rows then stored
+`identifier "local.icerust.IceRust" and certificate leaf = H"a8f20285..."`.
+The second build, never granted itself, then reported Screen Recording,
+event posting and Accessibility true, read the titles and found the hidden
+divider with 3 hidden items. The probes left the rows unchanged. Grants
+carry over between builds signed with the certificate.
 
 Not done: a button that resets the entries with `tccutil reset`. `tccutil`
 looks the bundle up through LaunchServices, which did not find test copies
