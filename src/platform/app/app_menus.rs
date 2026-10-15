@@ -1,0 +1,213 @@
+//! Hide application menus (v1.6). `crate::app_menus` decides; this module
+//! measures whether the shown items reach the frontmost app's menus, hides
+//! and restores ice-rust's own menus, switches the activation policy and
+//! hands focus back.
+
+use std::cell::{Cell, RefCell};
+use std::ptr::NonNull;
+use std::time::Duration;
+
+use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
+    NSRunningApplication, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
+};
+use objc2_foundation::{NSNotification, NSOperationQueue, NSTimer};
+
+use super::Controller;
+use super::triggers::overlaps;
+use crate::app_menus::{MenuAction, MenuSituation, items_reach_menus, menu_action};
+use crate::model::{Rect, STATUS_LAYER};
+use crate::platform::{events, timer, windows};
+use crate::sections::MenuBarState;
+
+/// When to measure after a change: the items take a moment to move, so a
+/// second look follows the first.
+const CHECKS: [Duration; 2] = [Duration::from_millis(200), Duration::from_millis(600)];
+
+#[derive(Default)]
+pub(super) struct AppMenus {
+    /// ice-rust is the active app with its menus hidden.
+    hiding: Cell<bool>,
+    /// The app that was in front when hiding began; it gets focus back.
+    previous: RefCell<Option<Retained<NSRunningApplication>>>,
+    timers: RefCell<Vec<Retained<NSTimer>>>,
+}
+
+impl AppMenus {
+    pub(super) fn is_hiding(&self) -> bool {
+        self.hiding.get()
+    }
+}
+
+/// Hides or shows every top-level item of ice-rust's main menu. With all of
+/// them hidden, the menu bar shows only the Apple menu while ice-rust is
+/// active.
+fn set_menus_hidden(app: &NSApplication, hidden: bool) {
+    if let Some(menu) = app.mainMenu() {
+        for item in menu.itemArray().iter() {
+            item.setHidden(hidden);
+        }
+    }
+}
+
+impl Controller {
+    /// Measures again once the items have moved. Runs after every menu bar
+    /// state change, the relevant setting changes and Settings closing.
+    pub(super) fn schedule_app_menu_check(&self) {
+        for old in self.app_menus.timers.borrow_mut().drain(..) {
+            old.invalidate();
+        }
+        let timers = CHECKS
+            .iter()
+            .map(|&delay| {
+                let me = self.me.clone();
+                timer::after(self.mtm, delay, move || {
+                    if let Some(c) = me.upgrade() {
+                        c.check_app_menus();
+                    }
+                })
+            })
+            .collect();
+        *self.app_menus.timers.borrow_mut() = timers;
+    }
+
+    fn check_app_menus(&self) {
+        let (enabled, use_ice_bar) = {
+            let s = self.settings.borrow();
+            (s.hide_app_menus, s.use_ice_bar)
+        };
+        let mut situation = MenuSituation {
+            enabled,
+            use_ice_bar,
+            section_shown: self.status.state() != MenuBarState::AllHidden,
+            settings_open: self
+                .settings_window
+                .borrow()
+                .as_ref()
+                .is_some_and(|w| w.is_visible()),
+            hiding: self.app_menus.hiding.get(),
+            overlap: None,
+        };
+        if !situation.hiding && situation.may_hide() {
+            situation.overlap = self.items_reach_app_menus();
+        }
+        match menu_action(situation) {
+            MenuAction::Hide => self.hide_app_menus(),
+            MenuAction::Restore => self.restore_app_menus(true),
+            MenuAction::Keep => {}
+        }
+    }
+
+    /// Ice's test on the menu bar with our icon: the leftmost on-screen
+    /// status item at or left of the end of the frontmost app's menus.
+    /// `None` when the menus cannot be read.
+    fn items_reach_app_menus(&self) -> Option<bool> {
+        let on_screen = windows::list_on_screen();
+        let place = self.menu_bar_place(&on_screen, events::pointer_location())?;
+        let b = place.display.bounds;
+        let bar = Rect::new(b.x, b.y, b.width, place.menu_bar_height);
+        let end = self.app_menus_end(&bar, true)?;
+        let edges = on_screen
+            .iter()
+            .filter(|w| w.layer == STATUS_LAYER && overlaps(&w.bounds, &bar))
+            .map(|w| w.bounds.min_x());
+        Some(items_reach_menus(edges, end))
+    }
+
+    fn hide_app_menus(&self) {
+        let app = NSApplication::sharedApplication(self.mtm);
+        let current = NSRunningApplication::currentApplication();
+        *self.app_menus.previous.borrow_mut() = NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .filter(|front| **front != *current);
+        set_menus_hidden(&app, true);
+        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        self.app_menus.hiding.set(true);
+        eprintln!("ice-rust: hiding application menus to make room for shown items");
+        // As for Settings (L2), activation follows the policy change on the
+        // next pass. It is forced: a click on a status item does not make
+        // ice-rust active, and the app in front would keep its menus.
+        let me = self.me.clone();
+        timer::after(self.mtm, Duration::ZERO, move || {
+            if let Some(c) = me.upgrade()
+                && c.app_menus.hiding.get()
+            {
+                // Deprecated since macOS 14, where `activate` may decline
+                // while another app is in front.
+                #[allow(deprecated)]
+                NSApplication::sharedApplication(c.mtm).activateIgnoringOtherApps(true);
+            }
+        });
+    }
+
+    /// Shows the app menus again: ice-rust's own menus come back, it returns
+    /// to an accessory app and, with `refocus`, hands focus back to the app
+    /// that was in front. Without `refocus` the user has already moved on.
+    pub(super) fn restore_app_menus(&self, refocus: bool) {
+        if !self.app_menus.hiding.replace(false) {
+            return;
+        }
+        let app = NSApplication::sharedApplication(self.mtm);
+        set_menus_hidden(&app, false);
+        let previous = self.app_menus.previous.borrow_mut().take();
+        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+        if refocus
+            && let Some(previous) = previous
+            && app.isActive()
+            && !previous.isTerminated()
+        {
+            previous.activateWithOptions(NSApplicationActivationOptions::empty());
+        }
+        eprintln!("ice-rust: showing application menus again");
+    }
+
+    /// Settings is opening while the menus are hidden: ice-rust stays a
+    /// regular app for the window, with its menus back, and Settings gives
+    /// focus back to the app that was in front before the hiding began.
+    pub(super) fn hand_app_menus_to_settings(&self) {
+        if !self.app_menus.hiding.replace(false) {
+            return;
+        }
+        set_menus_hidden(&NSApplication::sharedApplication(self.mtm), false);
+        if let Some(previous) = self.app_menus.previous.borrow_mut().take() {
+            *self.previous_app.borrow_mut() = Some(previous);
+        }
+    }
+
+    /// The user switching to another app ends the hiding; that app's menus
+    /// are back and focus stays where the user put it.
+    pub(super) fn observe_app_activation(&self) {
+        let me = self.me.clone();
+        let block = RcBlock::new(move |_note: NonNull<NSNotification>| {
+            let Some(c) = me.upgrade() else {
+                return;
+            };
+            if !c.app_menus.hiding.get() {
+                return;
+            }
+            let current = NSRunningApplication::currentApplication();
+            let other_in_front = NSWorkspace::sharedWorkspace()
+                .frontmostApplication()
+                .is_some_and(|front| *front != *current);
+            if other_in_front {
+                c.restore_app_menus(false);
+            }
+        });
+        let center = NSWorkspace::sharedWorkspace().notificationCenter();
+        let queue = NSOperationQueue::mainQueue();
+        // SAFETY: the name is an immutable notification name constant. No
+        // object filter; the main queue runs the block on the main thread,
+        // which the captured Weak<Controller> (not Send) and AppKit need.
+        let token = unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSWorkspaceDidActivateApplicationNotification),
+                None,
+                Some(&queue),
+                &block,
+            )
+        };
+        self.observers.borrow_mut().push((center, token));
+    }
+}

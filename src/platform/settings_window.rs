@@ -251,6 +251,7 @@ struct GeneralParts {
     custom_note: Retained<NSTextField>,
     custom_tint: Retained<NSButton>,
     use_bar: Retained<NSSwitch>,
+    hide_app_menus: Retained<NSSwitch>,
     show_on_click: Retained<NSSwitch>,
     show_on_hover: Retained<NSSwitch>,
     hover_delay: Retained<NSSlider>,
@@ -618,6 +619,10 @@ impl SettingsWindow {
             .setStringValue(&NSString::from_str(&seconds_text(seconds)));
         self.general.interval.setEnabled(s.auto_rehide);
         self.general
+            .hide_app_menus
+            .setState(switch_state(s.hide_app_menus));
+        self.general.hide_app_menus.setEnabled(!s.use_ice_bar);
+        self.general
             .show_on_click
             .setState(switch_state(s.show_on_click));
         self.general
@@ -797,6 +802,8 @@ impl SettingsWindow {
     fn general_changed(&self, slider_moved: bool) {
         let mut s = self.host.settings();
         s.use_ice_bar = self.general.use_bar.state() == NSControlStateValueOn;
+        s.hide_app_menus = self.general.hide_app_menus.state() == NSControlStateValueOn;
+        self.general.hide_app_menus.setEnabled(!s.use_ice_bar);
         s.show_on_click = self.general.show_on_click.state() == NSControlStateValueOn;
         s.show_on_hover = self.general.show_on_hover.state() == NSControlStateValueOn;
         s.show_on_scroll = self.general.show_on_scroll.state() == NSControlStateValueOn;
@@ -1191,8 +1198,8 @@ fn build_general(
         settings.auto_check_updates,
     );
 
-    // Hidden Items: how hidden items show (v1.5).
-    let show = RoundedBox::new(mtm, rect(MARGIN, 8.0, width, 5.0 * ROW), BoxStyle::Group);
+    // Hidden Items: how hidden items show (v1.5, v1.6).
+    let show = RoundedBox::new(mtm, rect(MARGIN, 8.0, width, 6.0 * ROW), BoxStyle::Group);
     add(hidden_page, &show, Follow::Width);
     let use_bar = switch_row(
         mtm,
@@ -1206,6 +1213,19 @@ fn build_general(
         settings.use_ice_bar,
     );
     separator(mtm, &show, ROW, width);
+    let hide_app_menus = switch_row(
+        mtm,
+        &show,
+        (
+            "Hide app menus",
+            "Hide the app's menus while shown items need the room (Use Ice Bar off)",
+        ),
+        ROW,
+        width,
+        settings.hide_app_menus,
+    );
+    hide_app_menus.setEnabled(!settings.use_ice_bar);
+    separator(mtm, &show, 2.0 * ROW, width);
     let show_on_click = switch_row(
         mtm,
         &show,
@@ -1213,11 +1233,11 @@ fn build_general(
             "Show on click",
             "Click an empty part of the menu bar to show or hide hidden items",
         ),
-        ROW,
+        2.0 * ROW,
         width,
         settings.show_on_click,
     );
-    separator(mtm, &show, 2.0 * ROW, width);
+    separator(mtm, &show, 3.0 * ROW, width);
     let show_on_hover = switch_row(
         mtm,
         &show,
@@ -1225,11 +1245,11 @@ fn build_general(
             "Show on hover",
             "Show hidden items while the pointer rests on an empty part of the menu bar",
         ),
-        2.0 * ROW,
+        3.0 * ROW,
         width,
         settings.show_on_hover,
     );
-    separator(mtm, &show, 3.0 * ROW, width);
+    separator(mtm, &show, 4.0 * ROW, width);
     let delay = settings.hover_delay.as_secs_f64();
     let (hover_delay, hover_delay_value) = slider_row(
         mtm,
@@ -1238,13 +1258,13 @@ fn build_general(
             "Hover delay",
             "How long the pointer rests before items show or hide",
         ),
-        3.0 * ROW,
+        4.0 * ROW,
         width,
         (delay, 0.0, MAX_HOVER_DELAY.as_secs_f64()),
         &tenths_text(delay),
     );
     hover_delay.setEnabled(settings.show_on_hover);
-    separator(mtm, &show, 4.0 * ROW, width);
+    separator(mtm, &show, 5.0 * ROW, width);
     let show_on_scroll = switch_row(
         mtm,
         &show,
@@ -1252,13 +1272,13 @@ fn build_general(
             "Show on scroll",
             "Swipe or scroll down over the menu bar to show hidden items, up to hide them",
         ),
-        4.0 * ROW,
+        5.0 * ROW,
         width,
         settings.show_on_scroll,
     );
 
     // Hidden Items: rehide.
-    let top = 8.0 + 5.0 * ROW + 16.0;
+    let top = 8.0 + 6.0 * ROW + 16.0;
     let rehide = RoundedBox::new(mtm, rect(MARGIN, top, width, 2.0 * ROW), BoxStyle::Group);
     add(hidden_page, &rehide, Follow::Width);
     let auto_rehide = switch_row(
@@ -1285,8 +1305,9 @@ fn build_general(
     );
     interval.setEnabled(settings.auto_rehide);
 
-    let controls: [(&NSControl, bool); 9] = [
+    let controls: [(&NSControl, bool); 10] = [
         (&use_bar, false),
+        (&hide_app_menus, false),
         (&show_on_click, false),
         (&show_on_hover, false),
         (&hover_delay, false),
@@ -1333,6 +1354,7 @@ fn build_general(
         custom_note,
         custom_tint,
         use_bar,
+        hide_app_menus,
         show_on_click,
         show_on_hover,
         hover_delay,

@@ -1,6 +1,7 @@
 //! ice-rust: hides menu bar items behind a divider and shows them in a panel.
 //! Pure modules carry the logic and tests; `platform` holds the macOS glue.
 
+pub mod app_menus;
 pub mod arrange;
 pub mod bar_layout;
 pub mod bar_scroll;

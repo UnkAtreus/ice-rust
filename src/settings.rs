@@ -17,6 +17,8 @@ pub const KEY_SHOW_ON_CLICK: &str = "ShowOnClick";
 pub const KEY_SHOW_ON_HOVER: &str = "ShowOnHover";
 pub const KEY_SHOW_ON_HOVER_DELAY: &str = "ShowOnHoverDelay";
 pub const KEY_SHOW_ON_SCROLL: &str = "ShowOnScroll";
+/// Ice's key for hiding the app menus when shown items reach them (v1.6).
+pub const KEY_HIDE_APP_MENUS: &str = "HideApplicationMenus";
 pub const KEY_TINT_CUSTOM_ICON: &str = "TintCustomIcon";
 /// The custom icon as PNG data at 3x (v1.4). Not part of `Settings`: it is
 /// written once when the user chooses an image.
@@ -80,6 +82,8 @@ pub struct Settings {
     pub hover_delay: Duration,
     /// Scrolling or swiping over the menu bar shows or hides items.
     pub show_on_scroll: bool,
+    /// Hide the frontmost app's menus while shown items reach them (v1.6).
+    pub hide_app_menus: bool,
 }
 
 impl Default for Settings {
@@ -96,6 +100,7 @@ impl Default for Settings {
             show_on_hover: false,
             hover_delay: HOVER_DELAY,
             show_on_scroll: true,
+            hide_app_menus: true,
         }
     }
 }
@@ -130,6 +135,7 @@ impl Settings {
                 .map(Duration::from_secs_f64)
                 .unwrap_or(defaults.hover_delay),
             show_on_scroll: get_bool(KEY_SHOW_ON_SCROLL).unwrap_or(defaults.show_on_scroll),
+            hide_app_menus: get_bool(KEY_HIDE_APP_MENUS).unwrap_or(defaults.hide_app_menus),
         }
     }
 }
@@ -236,9 +242,9 @@ mod store {
     use objc2_foundation::{NSData, NSNumber, NSString, NSUserDefaults};
 
     use super::{
-        KEY_AUTO_CHECK_UPDATES, KEY_AUTO_REHIDE, KEY_ICON_STYLE, KEY_REHIDE_INTERVAL,
-        KEY_SHOW_ON_CLICK, KEY_SHOW_ON_HOVER, KEY_SHOW_ON_HOVER_DELAY, KEY_SHOW_ON_SCROLL,
-        KEY_TINT_CUSTOM_ICON, KEY_USE_ICE_BAR, SeedValue, Settings,
+        KEY_AUTO_CHECK_UPDATES, KEY_AUTO_REHIDE, KEY_HIDE_APP_MENUS, KEY_ICON_STYLE,
+        KEY_REHIDE_INTERVAL, KEY_SHOW_ON_CLICK, KEY_SHOW_ON_HOVER, KEY_SHOW_ON_HOVER_DELAY,
+        KEY_SHOW_ON_SCROLL, KEY_TINT_CUSTOM_ICON, KEY_USE_ICE_BAR, SeedValue, Settings,
     };
 
     fn has_key(defaults: &NSUserDefaults, key: &str) -> bool {
@@ -281,6 +287,7 @@ mod store {
             (KEY_SHOW_ON_CLICK, settings.show_on_click),
             (KEY_SHOW_ON_HOVER, settings.show_on_hover),
             (KEY_SHOW_ON_SCROLL, settings.show_on_scroll),
+            (KEY_HIDE_APP_MENUS, settings.hide_app_menus),
         ] {
             defaults.setBool_forKey(on, &NSString::from_str(key));
         }
@@ -440,6 +447,14 @@ mod tests {
         assert!(s.show_on_hover);
         assert!(!s.show_on_scroll);
         assert_eq!(s.hover_delay, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn hide_app_menus_defaults_on_like_ice() {
+        assert!(Settings::default().hide_app_menus);
+        let off: HashMap<&str, bool> = [(KEY_HIDE_APP_MENUS, false)].into();
+        let s = Settings::from_lookup(|k| off.get(k).copied(), |_| None, |_| None);
+        assert!(!s.hide_app_menus);
     }
 
     #[test]

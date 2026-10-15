@@ -32,6 +32,9 @@ const BAR_CACHE: Duration = Duration::from_secs(2);
 /// How long the end of the app menus stays cached for hover checks. A
 /// click always reads it again.
 const MENUS_CACHE: Duration = Duration::from_secs(2);
+/// How far the Apple menu reaches from the menu bar's left edge; the end of
+/// the app menus while ice-rust hides them (measured 44 pt).
+const APPLE_MENU_REACH: f64 = 60.0;
 /// Wait after a click in empty space before acting, like Ice (50 ms).
 const CLICK_ACTION_DELAY: Duration = Duration::from_millis(50);
 
@@ -76,7 +79,7 @@ fn near_menu_bar(pointer: (f64, f64)) -> bool {
         .any(|d| d.bounds.contains(x, y) && y < d.bounds.y + MENU_BAR_REACH)
 }
 
-fn overlaps(a: &Rect, b: &Rect) -> bool {
+pub(super) fn overlaps(a: &Rect, b: &Rect) -> bool {
     a.min_x() < b.max_x() && b.min_x() < a.max_x() && a.min_y() < b.max_y() && b.min_y() < a.max_y()
 }
 
@@ -208,8 +211,10 @@ impl Controller {
     /// Where the frontmost app's menus end on `bar`. `fresh` reads them
     /// again; otherwise a reading younger than `MENUS_CACHE` for the same
     /// app is reused. `None` when they cannot be read (no Accessibility, no
-    /// answer in time, ice-rust itself in front) or lie on another display.
-    fn app_menus_end(&self, bar: &Rect, fresh: bool) -> Option<f64> {
+    /// answer in time, ice-rust itself in front for Settings) or lie on
+    /// another display. While ice-rust hides the app menus only the Apple
+    /// menu is left.
+    pub(super) fn app_menus_end(&self, bar: &Rect, fresh: bool) -> Option<f64> {
         let pid = menu_bar_space::frontmost_pid()?;
         if !fresh
             && let Some((cached, end, at)) = self.triggers.menus.get()
@@ -220,7 +225,10 @@ impl Controller {
         }
         // Asking our own process from its main thread would only time out.
         if pid == std::process::id() as i32 {
-            return None;
+            return self
+                .app_menus
+                .is_hiding()
+                .then(|| bar.min_x() + APPLE_MENU_REACH);
         }
         let menu = menu_bar_space::last_menu_frame(pid)?;
         if !overlaps(&menu, bar) {

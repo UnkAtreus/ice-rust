@@ -986,3 +986,27 @@ on scroll (down shows, up hides, once per gesture) and Show on hover (shows
 after the delay, hides on leaving, stays after a click in the menu bar) all
 passed. The global monitors receive clicks and scrolls over the menu bar on
 macOS 26.3.
+
+## v1.6: hide application menus (maintainer request 2026-10-15)
+
+Request: implement Ice's "Hide application menus when they overlap with
+shown items".
+
+Ice's mechanism ([ice-internals-evidence.md](ice-internals-evidence.md),
+section 1, HideApplicationMenus): on a control item state change while a
+section is shown, if the leftmost item's minX is at or left of the AX app
+menu frame's maxX, Ice sets `.regular` and activates itself with its own
+main-menu items hidden; with no section shown it sets `.accessory` and
+deactivates. Off while Use Ice Bar is on. Default on.
+
+| Part | Choice |
+|---|---|
+| Decision | `app_menus::menu_action`, pure: hide when enabled, Use Ice Bar off, a section shown, Settings closed and the items reach the menus; keep hiding while that holds; restore otherwise. `items_reach_menus` is Ice's leftmost-edge test. |
+| Measuring | 200 ms and 600 ms after each state change, the setting changes and Settings closing. Items: on-screen layer-25 windows on the menu bar with our icon. Menus: the Show on click Accessibility read (last `AXMenuBar` child, fresh). |
+| Hiding | Remember the frontmost app, hide every top-level item of our main menu, `.regular`, forced activation on the next run loop pass (a status item click does not activate the app; same pass failed for Settings, L2). |
+| Restoring | Unhide the menu items, `.accessory`, activate the remembered app. Another app becoming active (`NSWorkspaceDidActivateApplicationNotification`) restores without refocusing. Opening Settings hands the remembered app to Settings and keeps ice-rust regular. |
+| Interplay | While hiding, our own pid is in front; the empty-space test takes the app menus to end 60 pt from the left edge (Apple menu measured at 44 pt) instead of reading our own menus from the main thread. |
+| Setting | `HideApplicationMenus` (true), a switch on the Hidden Items page, enabled while Use Ice Bar is off. |
+
+Difference from Ice: switching to another app ends the hiding at once; Ice
+stays `.regular` until the sections hide.

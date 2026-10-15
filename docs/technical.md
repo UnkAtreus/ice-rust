@@ -29,11 +29,12 @@ on: macOS 26.3 on Apple Silicon, with four displays.
 9. [Probe](#probe)
 10. [Render a Settings page](#render-a-settings-page)
 11. [Show on click, hover and scroll (v1.5)](#show-on-click-hover-and-scroll-v15)
-12. [How hidden items are found](#how-hidden-items-are-found)
-13. [Stored settings and item placement](#stored-settings-and-item-placement)
-14. [Window captures on macOS 26](#window-captures-on-macos-26)
-15. [Limitations and differences from Ice](#limitations-and-differences-from-ice)
-16. [Verification history](#verification-history)
+12. [Hide application menus (v1.6)](#hide-application-menus-v16)
+13. [How hidden items are found](#how-hidden-items-are-found)
+14. [Stored settings and item placement](#stored-settings-and-item-placement)
+15. [Window captures on macOS 26](#window-captures-on-macos-26)
+16. [Limitations and differences from Ice](#limitations-and-differences-from-ice)
+17. [Verification history](#verification-history)
 
 ## Behavior
 
@@ -74,7 +75,8 @@ The logic lives in pure modules with unit tests and no macOS dependencies:
 `model`, `geometry`, `chain`, `sections`, `arrange`, `bar_layout`,
 `bar_scroll`, `rehide`, `input_tag`, `worker`, `image_check`, `brand` (the
 embedded artwork), `menu_icon` (the icon styles), `triggers` (show on
-click, hover and scroll), and the defaults half of `settings`. The macOS glue is under `src/platform/` and
+click, hover and scroll), `app_menus` (hide application menus), and the
+defaults half of `settings`. The macOS glue is under `src/platform/` and
 compiles only on macOS. The binary (`src/main.rs`) parses the command line
 and dispatches to the menu bar app, `probe` or `render-settings`.
 
@@ -223,7 +225,8 @@ bars stretch.
 - General: Menu bar icon and Custom image (v1.4, see
   [Icon styles](#icon-styles-v14)), Launch at login and Automatically check
   for updates (v1.3). Changes are saved and applied at once.
-- Hidden Items (v1.5): Use Ice Bar, Show on click, Show on hover, Hover delay
+- Hidden Items (v1.5): Use Ice Bar, Hide app menus (v1.6, enabled while
+  Use Ice Bar is off), Show on click, Show on hover, Hover delay
   (0 to 1 s in tenths), Show on scroll, Automatically rehide and Rehide after
   (5 to 60 s), and a note on clicking the icon or empty menu bar space. See
   [Show on click, hover and scroll](#show-on-click-hover-and-scroll-v15).
@@ -442,6 +445,38 @@ empty.
 Hover checks reuse the app menus' end for up to 2 s per frontmost app; a
 click reads it again.
 
+## Hide application menus (v1.6)
+
+Like Ice's HideApplicationMenus. When a section is shown in the menu bar
+and the items do not fit next to the frontmost app's menus, macOS draws
+only what fits. With Hide app menus on and Use Ice Bar off, ice-rust makes
+the room:
+
+1. After every menu bar state change, the setting changes and Settings
+   closing, ice-rust checks 200 ms and 600 ms later, once the items have
+   moved. Ice's test: the leftmost on-screen status item on the menu bar
+   with the ice-rust icon sits at or left of where the frontmost app's
+   menus end (`app_menus::items_reach_menus`, the same Accessibility read
+   as Show on click).
+2. If so, ice-rust remembers the app in front, hides every top-level item
+   of its own main menu, switches to a regular app and activates itself on
+   the next pass of the run loop (forced, since a click on a status item
+   does not make ice-rust active). The menu bar then shows only the Apple
+   menu, and macOS lays the items out in the freed space. ice-rust's icon
+   shows in the Dock meanwhile, as Ice's does.
+3. It keeps the menus hidden while any section stays shown
+   (`app_menus::menu_action`). Once every section hides, the setting goes
+   off or Use Ice Bar comes on, its menus come back, it returns to an
+   accessory app and gives focus back to the remembered app.
+4. Switching to another app ends the hiding at once and leaves focus there.
+   Opening Settings ends it too; Settings then gives focus back to the
+   remembered app when it closes.
+
+While the menus are hidden, Show on click and Show on hover take the app
+menus to end 60 pt right of the menu bar's left edge, past the Apple menu
+(44 pt measured), since ice-rust cannot read its own menus from its main
+thread.
+
 ## How hidden items are found
 
 1. List every window with `CGWindowListCopyWindowInfo` and keep layer 25
@@ -490,6 +525,7 @@ Stored in the process's standard user defaults:
 | `ShowOnHover` | false | The pointer resting in empty menu bar space shows items |
 | `ShowOnHoverDelay` | 0.2 | Seconds the pointer rests before hovering acts (0 to 1; another value means 0.2) |
 | `ShowOnScroll` | true | Scrolling or swiping over the menu bar shows or hides items |
+| `HideApplicationMenus` | true | Hide the frontmost app's menus while shown items reach them (v1.6; Use Ice Bar off) |
 | `CustomIconImage` | absent | The custom image as PNG data, fitted to 24 x 18 pt at 3x |
 | `LastUpdateCheck` | absent | Seconds since 1970 of the last successful update check |
 | `SkippedUpdateVersion` | absent | Version that "Skip This Version" set; automatic checks do not offer it |
@@ -601,9 +637,9 @@ menu bar items.
 
 ## Limitations and differences from Ice
 
-- Out of scope: global hotkeys, menu bar appearance, search, hiding
-  application menus, and Ice's smart and focused-app rehide strategies. The
-  Settings window has no Hotkeys, Appearance or Updates pages.
+- Out of scope: global hotkeys, menu bar appearance, search, and Ice's
+  smart and focused-app rehide strategies. The Settings window has no
+  Hotkeys, Appearance or Updates pages.
 - Show on click and Show on hover need Accessibility to find where the app
   menus end, act only on the menu bar of the display with the ice-rust icon,
   and do nothing while ice-rust itself is in front. Show on scroll is
@@ -625,7 +661,10 @@ menu bar items.
   events.
 - If the revealed section does not fit next to the app menus or the notch,
   macOS draws only what fits. An item that never reaches the screen is not
-  clicked; the app gives up after 1 s.
+  clicked; the app gives up after 1 s. With Use Ice Bar off, Hide app menus
+  frees the room the app menus take (see
+  [Hide application menus](#hide-application-menus-v16)); nothing frees the
+  notch.
 - When the hidden items are wider than the display, the Ice Bar keeps the
   items nearest the divider and shows a "+N" tile, which ignores clicks, in
   place of the rest. Those items are reachable only with Ice Bar mode off.

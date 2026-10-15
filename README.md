@@ -44,6 +44,11 @@ it (see [Differences from Ice](#differences-from-ice)).
   click on the icon opens a panel below the menu bar with an image of each
   hidden item. Clicking an image reveals that item's section and clicks the
   real item.
+- **Hide app menus.** With Use Ice Bar off, when the items you show reach
+  the menus of the app in front, ice-rust hides those menus until the items
+  hide again, so macOS has room to draw every item. ice-rust becomes the
+  active app meanwhile (its icon shows in the Dock), and the app you were
+  using gets focus back afterwards.
 - **Show from the menu bar.** Click an empty part of the menu bar, or swipe
   or scroll down over it, to show the hidden items; scroll up to hide them.
   Show on hover (off by default) shows them while the pointer rests on an
@@ -85,7 +90,7 @@ of this repository.
 | Show hidden items when an empty area in the menu bar is clicked | Yes | Yes | Option-click shows the always-hidden items. Needs Accessibility. |
 | Show hidden items by scrolling or swiping in the menu bar | Yes | Yes | Down or right shows, up or left hides, the same way with natural scrolling on or off. |
 | Automatically rehide menu bar items | Yes | Partial | Timed only (5 to 60 s), held while a menu or panel is open. Ice also has smart and focused-app strategies. |
-| Hide application menus when they overlap with shown items | Yes | No | |
+| Hide application menus when they overlap with shown items | Yes | Yes | "Hide app menus" on the Hidden Items page, on by default, for Use Ice Bar off. Needs Accessibility. |
 | Drag and drop interface to arrange individual items | Yes | Yes | Moves on-screen items only: the sections involved are revealed first. |
 | Display hidden items in a separate bar (Ice Bar) | Yes | Yes | Clicking an image reveals the whole section, then clicks the real item. |
 | Search menu bar items | Yes | No | |
@@ -165,8 +170,9 @@ Planned, in rough priority order. Nothing here is implemented yet.
 
 `ice-rust render-settings` drew the pages offscreen with `--default-settings`.
 The General page shows the ice-rust Logo icon. The Hidden Items page shows
-the defaults: Use Ice Bar on, Show on click on, Show on hover off with a
-0.2 s delay, Show on scroll on, Automatically rehide on, rehide after 15 s.
+the defaults: Use Ice Bar on, Hide app menus on (it acts with Use Ice Bar
+off), Show on click on, Show on hover off with a 0.2 s delay, Show on
+scroll on, Automatically rehide on, rehide after 15 s.
 The offscreen render draws the track of a switch that is on in gray; the
 knob at the right marks it on. It also draws the knob of a disabled slider
 at the left end.
@@ -333,9 +339,9 @@ and runtime observations.
 
 ## Differences from Ice
 
-- ice-rust has no global hotkeys, search, menu bar appearance settings, hiding of
-  application menus, or Ice's smart and focused-app rehide strategies. Its
-  Settings window has no Hotkeys, Appearance or Updates pages.
+- ice-rust has no global hotkeys, search, menu bar appearance settings, or
+  Ice's smart and focused-app rehide strategies. Its Settings window has no
+  Hotkeys, Appearance or Updates pages.
 - Discovery uses only the public window list and window geometry. Ice uses
   private CoreGraphics calls for the menu bar window list, spaces and the
   active menu bar display, and an XPC helper with Accessibility to find the
@@ -359,6 +365,9 @@ and runtime observations.
   adds up to 10 points. Ice compares each event's raw deltas with 5 points,
   so its direction flips with natural scrolling and a slow swipe may not
   count.
+- While Hide app menus is in effect, switching to another app ends it at
+  once and leaves focus there. Ice stays a regular app until the sections
+  hide.
 - Show on hover hides on leaving only the items it showed itself; a click in
   the menu bar takes them over, like Ice's latch. A Control-click in empty
   menu bar space does nothing; Ice opens its secondary context menu there.
@@ -452,7 +461,9 @@ What these numbers do not cover:
   Layout bars scroll instead.
 - **Room in the menu bar.** If a revealed section does not fit next to the
   app menus or the notch, macOS draws only what fits, and click-through gives
-  up on an item that does not reach the screen within 1 s.
+  up on an item that does not reach the screen within 1 s. With Use Ice Bar
+  off, Hide app menus makes room by hiding the app's menus; nothing frees
+  the space the notch takes.
 - **Main-thread waits.** The Menu Bar Layout page waits on the main thread
   for its captures, up to 1 s per capture, when it opens and on each 3 s
   refresh.

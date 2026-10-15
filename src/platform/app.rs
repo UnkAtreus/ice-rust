@@ -51,7 +51,9 @@ use crate::rehide::{Activity, Decision, Rehide};
 use crate::sections::{MenuBarState, Section};
 use crate::settings::{self, KEY_CUSTOM_ICON_IMAGE, Settings};
 
+mod app_menus;
 mod triggers;
+use app_menus::AppMenus;
 use triggers::Triggers;
 
 /// Ignore a reopen request this soon after a click outside closed the bar,
@@ -256,6 +258,8 @@ struct Controller {
     outside_monitor: RefCell<Option<Retained<AnyObject>>>,
     /// Show on click, hover and scroll (v1.5).
     triggers: Triggers,
+    /// Hide application menus (v1.6).
+    app_menus: AppMenus,
     settle_timer: RefCell<Option<Retained<NSTimer>>>,
     tick_timer: RefCell<Option<Retained<NSTimer>>>,
     observers: RefCell<Vec<Observer>>,
@@ -420,6 +424,7 @@ impl Controller {
                 bar_closed: Cell::new(None),
                 outside_monitor: RefCell::new(None),
                 triggers: Triggers::default(),
+                app_menus: AppMenus::default(),
                 settle_timer: RefCell::new(None),
                 tick_timer: RefCell::new(None),
                 observers: RefCell::new(Vec::new()),
@@ -453,6 +458,7 @@ impl Controller {
         );
         self.observe(&NSNotificationCenter::defaultCenter(), screens_changed);
         self.observe_termination();
+        self.observe_app_activation();
         self.install_triggers();
 
         // Keeps the About page's update status current while it is open.
@@ -644,6 +650,11 @@ impl Controller {
         {
             self.install_triggers();
         }
+        if (previous.hide_app_menus, previous.use_ice_bar)
+            != (next.hide_app_menus, next.use_ice_bar)
+        {
+            self.schedule_app_menu_check();
+        }
     }
 
     /// Stores a newly chosen custom image and switches the icon to it, with
@@ -716,6 +727,7 @@ impl Controller {
         self.status.set_state(applied);
         self.status
             .set_icon_active(applied != MenuBarState::AllHidden || self.bar.is_visible());
+        self.schedule_app_menu_check();
     }
 
     /// Live order of the three control items when their titles are
@@ -1116,6 +1128,7 @@ impl Controller {
     /// Opens the single Settings window, on `page` when given. The app is a
     /// regular app while the window is open.
     fn open_settings(&self, page: Option<Page>) {
+        self.hand_app_menus_to_settings();
         let existing = self.settings_window.borrow().clone();
         let window = existing.unwrap_or_else(|| {
             let host: Rc<dyn SettingsHost> = self.host.clone();
@@ -1189,6 +1202,8 @@ impl Controller {
         {
             previous.activateWithOptions(NSApplicationActivationOptions::empty());
         }
+        // Shown items may still need the room the app menus take.
+        self.schedule_app_menu_check();
         // Drop the window after its delegate callback has returned, with its
         // content detached so the pages are freed now (L7).
         let me = self.me.clone();
