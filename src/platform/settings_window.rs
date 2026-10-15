@@ -1479,6 +1479,19 @@ fn build_permissions(
             },
         ));
     }
+    add(
+        page,
+        &wrapping_label(
+            mtm,
+            "If IceRust is switched on in System Settings but shows as missing here, select it \
+             there and remove it with the minus (-) button, then grant it again. Turning the \
+             switch off and on does not help.",
+            rect(MARGIN + 4.0, 48.0 + 2.0 * ROW + 12.0, width - 8.0, 52.0),
+            12.0,
+            &NSColor::secondaryLabelColor(),
+        ),
+        Follow::Width,
+    );
     out
 }
 

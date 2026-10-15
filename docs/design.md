@@ -97,7 +97,7 @@ src/
     ice_bar.rs       NSPanel (M8) + item view class (acceptsFirstMouse, click detection)
     app.rs           controller: wiring, timers, monitors, notifications
 scripts/
-  bundle.sh          builds IceRust.app (LSUIElement, stable bundle id, ad-hoc signature)
+  bundle.sh          builds IceRust.app (LSUIElement, stable bundle id, release certificate or ad-hoc signature)
 ```
 
 Pure modules have no macOS dependencies and carry unit tests (`cargo test`).
@@ -878,3 +878,61 @@ a missing file are refused. `render-settings --page general` drew the
 group with the logo, Eye and a colored custom image. A grid drawn from
 `style_images` shows both images of every style, the Ellipsis dots solid
 and outlined at 17 x 4 pt.
+
+## Permissions after updates (L12) and issue #2 (2026-10-15)
+
+Maintainer report: after installing a new build, ice-rust asked for its
+permissions although both were granted. System Settings showed IceRust
+switched on, turning the switches off and on did not help, and only
+removing both entries with the minus button, then opening ice-rust and
+granting again, worked.
+
+Evidence (macOS 26.3, read-only queries of the system TCC database):
+
+| Observation | Result |
+|---|---|
+| TCC rows for `local.icerust.IceRust` | `kTCCServiceScreenCapture` and `kTCCServiceAccessibility`, auth_value 2, auth_reason 4, both changed at 15:02 when the maintainer re-added them |
+| Stored `csreq` (decoded with `csreq -t`) | `cdhash H"f42e5185..."` for both, the cdhash of the running dist build |
+| Designated requirement of the 0.1.4 release | `cdhash H"ffbdd389..."`, which does not meet the stored requirement |
+| `probe --json` launched with `open` from a copy of the dist build | Screen Recording, event posting and Accessibility true; titles readable; divider found |
+| The same from a copy of the 0.1.4 release (same bundle ID) | all three false; "window titles are unreadable"; no divider |
+| TCC rows before and after both probes | identical |
+
+Cause (L12): every release up to 0.1.4 has an ad-hoc signature, whose
+designated requirement is the cdhash of that build. TCC stores the
+requirement of the granted build and checks later launches against it, so
+each update loses both grants while System Settings still lists them as on.
+Turning a switch off and on keeps the stored requirement; removing the
+entry drops it. The README, the update prompt and the notice after a
+version change told users to turn the switch off and on, which does not
+work.
+
+Fix (0.1.5):
+
+| Change | Detail |
+|---|---|
+| Release certificate | Self-signed RSA 3072 code signing certificate "ice-rust Release Signing", valid until 2046-10-15, SHA-1 `A8F20285 6370885D BF698604 320FD846 F8145BF2`, SHA-256 `F8DD7B80 496B7372 3AF76990 70EBE9B9 5325C35A 7EE59BF4 3DE6FC68 78F3AFC3`. Key and certificate in `~/.config/ice-rust/` (mode 600), identity in the maintainer's login keychain. |
+| Requirement | `identifier "local.icerust.IceRust" and certificate leaf = H"a8f20285..."`. A test with a throwaway certificate in a temporary keychain: two different builds signed with it each met the other's requirement; the ad-hoc 0.1.4 did not. |
+| Scripts | `bundle.sh` signs with the identity when the keychain has it (found by SHA-1, since the certificate is untrusted), otherwise ad-hoc. `release.sh` fails without it and checks that the requirement names the certificate. |
+| Texts | The update prompt says the grants carry over; the notice after a version change and a new line on the Permissions page say to remove the entry with the minus button, not to toggle it. |
+| Updater | Unchanged: `codesign --verify --strict` accepts the certificate-signed bundle. |
+
+Moving from 0.1.4 or earlier to 0.1.5 still needs one removal and new
+grant, since the stored requirements are cdhashes. Not yet verified: TCC
+keeping a live grant across two certificate-signed builds. That needs a
+grant to a certificate-signed build first.
+
+Not done: a button that resets the entries with `tccutil reset`. `tccutil`
+looks the bundle up through LaunchServices, which did not find test copies
+under the scratch folder, and resetting the real bundle ID would have
+removed the maintainer's working grants.
+
+Issue #2 (external, macOS 27.0.1): the Ice Bar showed "Screen Recording
+permission needed" while the Permissions page showed both permissions
+granted. On macOS 26.3 a stale grant makes `CGPreflightScreenCaptureAccess`
+return false, so the Permissions page would say missing; the report shows
+the opposite, which L12 alone does not explain. Possible causes: a grant
+given while ice-rust ran and no relaunch, or macOS 27 withholding status
+window titles from a process that has Screen Recording. Open; a reply asking
+the reporter to remove and re-add both entries and to send `probe --json`
+output is drafted but not posted.

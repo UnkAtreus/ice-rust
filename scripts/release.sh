@@ -7,9 +7,12 @@
 #                                  for example while dist/IceRust.app runs
 #
 # Needs: the version already set in Cargo.toml, the private update key at
-# $ICE_RUST_UPDATE_KEY (default ~/.config/ice-rust/update-signing.key), and
-# a build whose compiled-in public key matches it. A build that still has
-# the placeholder key fails at the verify step.
+# $ICE_RUST_UPDATE_KEY (default ~/.config/ice-rust/update-signing.key), a
+# build whose compiled-in public key matches it (a build that still has the
+# placeholder key fails at the verify step), and the "ice-rust Release
+# Signing" code signing identity in the keychain. Every release is signed
+# with that certificate so Screen Recording and Accessibility grants carry
+# over to the next version (see scripts/bundle.sh).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,9 +34,24 @@ if [[ ! -f "$key" ]]; then
     exit 1
 fi
 
+identity="$(security find-identity -p codesigning 2>/dev/null |
+    awk 'index($0, "\"ice-rust Release Signing\"") { print $2; exit }')"
+if [[ -z "$identity" ]]; then
+    echo "no \"ice-rust Release Signing\" identity in the keychain" >&2
+    exit 1
+fi
+
 mkdir -p "${OUT_DIR:-dist}"
 out="$(cd "${OUT_DIR:-dist}" && pwd)"
-OUT_DIR="$out" scripts/bundle.sh
+OUT_DIR="$out" SIGN_IDENTITY="$identity" scripts/bundle.sh
+# The requirement TCC stores must name the certificate, not a cdhash.
+leaf="$(echo "$identity" | tr '[:upper:]' '[:lower:]')"
+requirement="$(codesign -d -r- "$out/IceRust.app" 2>&1)"
+if [[ "$requirement" != *"certificate leaf = H\"$leaf\""* ]]; then
+    echo "IceRust.app is not signed by the release certificate:" >&2
+    echo "$requirement" >&2
+    exit 1
+fi
 bin="$out/IceRust.app/Contents/MacOS/ice-rust"
 name="IceRust-$version-arm64"
 cd "$out"

@@ -96,9 +96,22 @@ open target/IceRust.app
 
 The bundle is `LSUIElement` (no Dock icon), has the stable identifier
 `local.icerust.IceRust` (override with `BUNDLE_ID=...`), declares
-`LSMinimumSystemVersion` 14.0, and carries an ad-hoc signature. An ad-hoc
-signature is tied to the binary's code hash, so expect to grant permissions
-again after a rebuild.
+`LSMinimumSystemVersion` 14.0. `scripts/bundle.sh` signs it with the
+"ice-rust Release Signing" identity when the keychain has it, otherwise
+ad-hoc (`SIGN_IDENTITY=-` forces ad-hoc, `SIGN_IDENTITY=<SHA-1>` picks an
+identity). Releases from 0.1.5 on always use the certificate.
+
+TCC stores the designated requirement of the build that was granted, as
+`csreq` in its database, and later checks each launch against it. With the
+certificate the requirement is
+`identifier "local.icerust.IceRust" and certificate leaf = H"a8f202856370885dbf698604320fd846f8145bf2"`,
+which every build signed with that certificate meets, so grants carry over
+to rebuilds and updates. An ad-hoc requirement is `cdhash H"..."`, which
+only the granted build meets. System Settings still shows a stale entry as
+on; turning it off and on keeps the stored requirement, so the entry has to
+be removed with the minus (-) button and granted again. The certificate is
+self-signed and not trusted by the system, so `codesign` finds it by its
+SHA-1 hash, not by its name.
 
 ## Icon
 

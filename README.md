@@ -194,8 +194,8 @@ items with expanded dividers conflict in the same menu bar.
    [Releases](https://github.com/UnkAtreus/ice-rust/releases) (Apple Silicon
    only) and unzip it.
 2. Move `IceRust.app` to `/Applications`.
-3. Open it. The app has an ad-hoc signature and is not notarized, so macOS
-   blocks the first launch. Open System Settings > Privacy & Security and
+3. Open it. The app is signed with a self-signed ice-rust certificate and
+   is not notarized, so macOS blocks the first launch. Open System Settings > Privacy & Security and
    click Open Anyway, or run
    `xattr -dr com.apple.quarantine /Applications/IceRust.app` and open it
    again.
@@ -219,10 +219,12 @@ scripts/bundle.sh          # builds target/IceRust.app; does not launch it
 open target/IceRust.app
 ```
 
-The bundle has no Dock icon (`LSUIElement`), the bundle identifier
-`local.icerust.IceRust` (set `BUNDLE_ID` to change it) and an ad-hoc
-signature. An ad-hoc signature is tied to the binary's code hash, so expect
-to grant the permissions again after a rebuild.
+The bundle has no Dock icon (`LSUIElement`) and the bundle identifier
+`local.icerust.IceRust` (set `BUNDLE_ID` to change it). Without the release
+certificate in your keychain it gets an ad-hoc signature, which is tied to
+the binary's code hash, so expect to grant the permissions again after each
+rebuild: remove IceRust from both lists in Privacy & Security with the minus
+(-) button, then open it and grant them again.
 
 Quitting ice-rust removes its three status items, and the items it hid
 return.
@@ -263,10 +265,17 @@ by hand once, and later versions arrive through the app.
 - **Installing.** The old bundle moves to `IceRust.app.previous`, the new
   one takes its place, and ice-rust relaunches; the next launch deletes the
   previous bundle. If the move fails, the old bundle goes back.
-- **Permissions after an update.** The app has an ad-hoc signature, so macOS
-  treats each version as a new app. After updating, turn IceRust off and on
-  again in Privacy & Security > Screen Recording and > Accessibility, or
-  remove it and add it again. ice-rust shows this once after an update when a
+- **Permissions after an update.** From 0.1.5 on, every release is signed
+  with the same self-signed certificate ("ice-rust Release Signing", SHA-256
+  `F8DD7B80 496B7372 3AF76990 70EBE9B9 5325C35A 7EE59BF4 3DE6FC68 78F3AFC3`),
+  so Screen Recording and Accessibility carry over to the next version.
+  Versions up to 0.1.4 had an ad-hoc signature: macOS tied each grant to
+  that exact build, so after an update System Settings still showed IceRust
+  switched on while the new version had no permission. Turning the switch off
+  and on does not fix that. Remove IceRust from Privacy & Security > Screen
+  Recording and > Accessibility with the minus (-) button, then quit and
+  open IceRust and grant both again. Updating from 0.1.4 or earlier to 0.1.5
+  needs this once. ice-rust shows these steps once after an update when a
   permission is missing.
 - **Limits.** Updating needs write access to the folder that holds
   IceRust.app. A standard (non-admin) account cannot write `/Applications`,
@@ -427,9 +436,9 @@ What these numbers do not cover:
   a relaunch resets the order if AppKit saved it.
 - **Window size.** The Settings window opens at 820 x 600 pt each time; it
   does not remember a larger size.
-- **Permissions after a rebuild.** The bundle's ad-hoc signature is tied to
-  the binary's code hash, so a rebuilt bundle needs its permissions granted
-  again.
+- **Permissions after a rebuild.** A bundle built without the release
+  certificate has an ad-hoc signature tied to the binary's code hash, so it
+  needs its permissions removed and granted again after each rebuild.
 
 [docs/technical.md](docs/technical.md#limitations-and-differences-from-ice)
 lists every limitation, and [docs/design.md](docs/design.md) records each
@@ -472,7 +481,9 @@ cargo run --release -- apply-update --app <IceRust.app> --zip <zip> --sig <sig>
 
 1. Set the new version in `Cargo.toml` and commit.
 2. Run `scripts/release.sh <version>`. It builds `dist/IceRust.app`
-   (`OUT_DIR=<dir>` builds into another folder), zips it, signs the zip with
+   (`OUT_DIR=<dir>` builds into another folder) signed with the "ice-rust
+   Release Signing" identity from the keychain, checks that the code
+   signing requirement names that certificate, zips the app, signs the zip with
    the private key at `~/.config/ice-rust/update-signing.key`
    (`ICE_RUST_UPDATE_KEY` overrides the path), verifies the signature with the
    key built into the new binary, writes the SHA-256 file, and prints the
@@ -480,6 +491,10 @@ cargo run --release -- apply-update --app <IceRust.app> --zip <zip> --sig <sig>
    itself.
 3. Keep a backup of the private key. Without it, installed copies cannot
    accept new updates; a new key needs a manual update by every user.
+   Back up the certificate too (`~/.config/ice-rust/release-signing.key.pem`
+   and `release-signing.cert.pem`): a new certificate makes every user grant
+   the permissions again. To set it up on another Mac, import both into the
+   login keychain as a PKCS#12 file allowed for `/usr/bin/codesign`.
 
 `ice-rust update-keygen --out <path>` makes a new key pair (the private key
 file is mode 600 and never overwritten) and prints the public key to put in

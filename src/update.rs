@@ -65,10 +65,21 @@ pub const KEY_SKIPPED_VERSION: &str = "SkippedUpdateVersion";
 pub const KEY_LAST_LAUNCHED_VERSION: &str = "LastLaunchedVersion";
 
 pub const MSG_UP_TO_DATE: &str = "ice-rust is up to date";
-/// Shown in the prompt, on the Permissions page and in the README.
-pub const PERMISSIONS_NOTE: &str = "After updating, turn IceRust off and on again in Privacy & \
-     Security > Screen Recording and in Privacy & Security > Accessibility, or remove it with \
-     the minus button and add it again.";
+/// Shown in the update prompt. Releases from 0.1.5 on are signed with the
+/// ice-rust certificate, so TCC grants carry over to the next one.
+pub const PERMISSIONS_NOTE: &str = "Screen Recording and Accessibility carry over to the new \
+     version. If one stops working, remove IceRust from that list in Privacy & Security with \
+     the minus (-) button, then open IceRust and grant it again. Turning the switch off and on \
+     does not help.";
+
+/// Shown once after a version change with a missing permission. TCC keeps
+/// the code requirement of the build that was granted; turning the switch
+/// off and on keeps that requirement, removing the entry drops it.
+pub const REGRANT_NOTE: &str = "macOS does not apply the earlier grants to this version, even \
+     where System Settings still shows IceRust switched on. In Privacy & Security > Screen \
+     Recording and in Privacy & Security > Accessibility, select IceRust and remove it with the \
+     minus (-) button. Turning the switch off and on does not help. Then quit and open IceRust \
+     and grant both when it asks.";
 
 /// Whether `key` is the placeholder, which no update verifies against.
 pub fn is_placeholder_key(key: &[u8; 32]) -> bool {
@@ -477,8 +488,9 @@ pub fn from_epoch_seconds(seconds: f64) -> Option<SystemTime> {
 
 /// Whether the first launch of this version opens Settings on the
 /// Permissions page: the version differs from `LastLaunchedVersion` (a
-/// missing value differs too) and a permission is missing. An ad-hoc
-/// signed build does not match the grants of the previous one.
+/// missing value differs too) and a permission is missing. A build with
+/// another signing requirement, such as an ad-hoc build before 0.1.5, does
+/// not match the grants of the previous one.
 pub fn needs_permission_notice(
     last_launched: Option<&str>,
     current: &str,

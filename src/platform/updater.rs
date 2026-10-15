@@ -21,9 +21,9 @@ use super::timer;
 use crate::settings;
 use crate::update::{
     self, CheckOutcome, DUE_POLL_INTERVAL, FIRST_CHECK_DELAY, KEY_LAST_LAUNCHED_VERSION,
-    KEY_LAST_UPDATE_CHECK, KEY_SKIPPED_VERSION, MSG_UP_TO_DATE, PERMISSIONS_NOTE, Update,
-    UpdateStatus, Version, bundle_of_executable, check_due, epoch_seconds, from_epoch_seconds,
-    needs_permission_notice, precheck, prompt_title, should_offer, status_line,
+    KEY_LAST_UPDATE_CHECK, KEY_SKIPPED_VERSION, MSG_UP_TO_DATE, PERMISSIONS_NOTE, REGRANT_NOTE,
+    Update, UpdateStatus, Version, bundle_of_executable, check_due, epoch_seconds,
+    from_epoch_seconds, needs_permission_notice, precheck, prompt_title, should_offer, status_line,
 };
 
 /// How often the main thread looks for a worker's result.
@@ -377,7 +377,7 @@ impl Updater {
         ) {
             let choice = self.alert(
                 "ice-rust needs its permissions again",
-                PERMISSIONS_NOTE,
+                REGRANT_NOTE,
                 &["Open Privacy & Security", "Later"],
             );
             if choice == 0 {
