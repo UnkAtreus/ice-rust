@@ -978,3 +978,11 @@ owned by Control Center, so the triggers act on the active menu bar only.
 Not done: Ice's secondary context menu on a Control-click in empty space;
 triggers while ice-rust itself is in front (its own AX menus are not read
 from its main thread).
+
+Hand test (2026-10-15, macOS 26.3, maintainer): the dist build of 7b583df,
+signed with the release certificate, kept both permissions without a new
+grant. Show on click (plain and Option-click, other clicks unchanged), Show
+on scroll (down shows, up hides, once per gesture) and Show on hover (shows
+after the delay, hides on leaving, stays after a click in the menu bar) all
+passed. The global monitors receive clicks and scrolls over the menu bar on
+macOS 26.3.
