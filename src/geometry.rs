@@ -6,7 +6,7 @@ use crate::model::{
     ABUT_TOLERANCE, MAIN_MENU_LAYER, MENU_BAR_WINDOW_TITLE, Rect, STATUS_LAYER,
     WINDOW_SERVER_OWNER, WindowRecord,
 };
-use crate::sections::MenuBarState;
+use crate::sections::{MenuBarState, Section};
 
 /// A display with its bounds in CG space.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -246,9 +246,85 @@ pub fn composite_scale(image_width: usize, image_height: usize, union: &Rect) ->
     ((expected_height - image_height as f64).abs() <= 1.0).then_some(scale)
 }
 
+/// Width of a collapsed divider (a chevron) when its real width is not
+/// known because it is expanded; the icon, an 18 pt glyph, is 34 pt wide.
+pub const COLLAPSED_DIVIDER_WIDTH: f64 = 30.0;
+
+/// Widths, in points, of what each section puts in the menu bar.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SectionWidths {
+    /// Items right of the hidden divider, the ice-rust icon included.
+    pub visible: f64,
+    pub hidden: f64,
+    pub always_hidden: f64,
+    /// The hidden divider collapsed.
+    pub hidden_divider: f64,
+    /// The always-hidden divider collapsed; 0 without one.
+    pub always_hidden_divider: f64,
+}
+
+/// Menu bar width the status items need in `state`: the visible items, and
+/// for each shown section its items and its collapsed divider.
+pub fn room_needed(state: MenuBarState, widths: &SectionWidths) -> f64 {
+    let mut needed = widths.visible;
+    if state.is_shown(Section::Hidden) {
+        needed += widths.hidden + widths.hidden_divider;
+    }
+    if state.is_shown(Section::AlwaysHidden) {
+        needed += widths.always_hidden + widths.always_hidden_divider;
+    }
+    needed
+}
+
+/// Width status items can use on `display`: right of the notch when it has
+/// one, since macOS places no status item left of it; otherwise the whole
+/// width, which ignores the app menus.
+pub fn status_item_room(display: &Rect, notch: Option<&Rect>) -> f64 {
+    notch.map_or(display.width, |n| (display.max_x() - n.max_x()).max(0.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn widths() -> SectionWidths {
+        // Measured on the development host's built-in display, 2026-10-15.
+        SectionWidths {
+            visible: 491.0,
+            hidden: 104.0,
+            always_hidden: 585.0,
+            hidden_divider: 30.0,
+            always_hidden_divider: 30.0,
+        }
+    }
+
+    #[test]
+    fn room_needed_adds_the_shown_sections() {
+        let w = widths();
+        assert_eq!(room_needed(MenuBarState::AllHidden, &w), 491.0);
+        assert_eq!(room_needed(MenuBarState::HiddenShown, &w), 625.0);
+        assert_eq!(room_needed(MenuBarState::AllShown, &w), 1240.0);
+    }
+
+    #[test]
+    fn room_is_right_of_the_notch() {
+        let display = Rect::new(-1512.0, 1080.0, 1512.0, 982.0);
+        let notch = Rect::new(-847.0, 1080.0, 185.0, 32.0);
+        assert_eq!(status_item_room(&display, Some(&notch)), 662.0);
+        assert_eq!(status_item_room(&display, None), 1512.0);
+        // A notch at the right edge leaves nothing.
+        let edge = Rect::new(-10.0, 1080.0, 10.0, 32.0);
+        assert_eq!(status_item_room(&display, Some(&edge)), 0.0);
+    }
+
+    #[test]
+    fn every_section_does_not_fit_beside_this_notch() {
+        let display = Rect::new(-1512.0, 1080.0, 1512.0, 982.0);
+        let notch = Rect::new(-847.0, 1080.0, 185.0, 32.0);
+        let room = status_item_room(&display, Some(&notch));
+        assert!(room_needed(MenuBarState::HiddenShown, &widths()) <= room);
+        assert!(room_needed(MenuBarState::AllShown, &widths()) > room);
+    }
 
     const PRIMARY_HEIGHT: f64 = 1440.0;
 

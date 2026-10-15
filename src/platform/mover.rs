@@ -38,6 +38,19 @@ pub trait MoverHost {
     fn set_menu_bar_state(&self, state: MenuBarState);
     /// Bounds (CG space) of the display with the active menu bar.
     fn active_display(&self, windows: &[WindowRecord]) -> Option<Rect>;
+    /// The room the sections shown in `state` need and the room the active
+    /// menu bar has for status items. `None` when the layout cannot be
+    /// read.
+    fn menu_bar_room(&self, state: MenuBarState) -> Option<MenuBarRoom>;
+}
+
+/// Menu bar room, in points, read when a move starts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MenuBarRoom {
+    pub needed: f64,
+    pub free: f64,
+    /// The free room is what the notch leaves on its right.
+    pub notch: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +66,13 @@ pub enum MoveError {
     NoPermission,
     NotFound,
     NotOnScreen,
+    /// The sections the move shows do not fit in the menu bar, so macOS
+    /// does not draw some of their items.
+    NoRoom {
+        needed: u32,
+        free: u32,
+        notch: bool,
+    },
     UserBusy,
     Input(String),
     NotPlaced,
@@ -71,6 +91,21 @@ impl fmt::Display for MoveError {
                 f,
                 "the item or its neighbor did not appear on screen within {} s",
                 MOVE_SHOW_TIMEOUT.as_secs()
+            ),
+            MoveError::NoRoom {
+                needed,
+                free,
+                notch,
+            } => write!(
+                f,
+                "not enough room in the menu bar: this move shows sections that need about \
+                 {needed} pt, and {free} pt are free {}. Try it while a wider display has \
+                 the menu bar",
+                if *notch {
+                    "right of the notch"
+                } else {
+                    "on this display"
+                }
             ),
             MoveError::UserBusy => write!(
                 f,
@@ -101,6 +136,8 @@ struct Job {
     request: MoveRequest,
     done: Option<MoveCallback>,
     previous: MenuBarState,
+    /// The room the move's sections need and have, read before showing.
+    room: Option<MenuBarRoom>,
     phase: Phase,
     since: Instant,
     attempt: usize,
@@ -113,6 +150,19 @@ pub struct Mover {
     queue: RefCell<VecDeque<(MoveRequest, MoveCallback)>>,
     job: RefCell<Option<Job>>,
     ticker: RefCell<Option<Retained<NSTimer>>>,
+}
+
+/// Why the item or its neighbor never reached the screen: not enough room
+/// when the shown sections are wider than the menu bar's free room.
+fn not_on_screen(room: Option<MenuBarRoom>) -> MoveError {
+    match room {
+        Some(room) if room.needed > room.free => MoveError::NoRoom {
+            needed: room.needed.round() as u32,
+            free: room.free.round() as u32,
+            notch: room.notch,
+        },
+        _ => MoveError::NotOnScreen,
+    }
 }
 
 /// Item and target bounds from one window list, by id.
@@ -189,6 +239,8 @@ impl Mover {
         }
         let previous = self.host.menu_bar_state();
         let needed = previous.covering(&request.sections);
+        // Read while the sections are still where the layout knows them.
+        let room = self.host.menu_bar_room(needed);
         if needed != previous {
             self.host.set_menu_bar_state(needed);
         }
@@ -196,6 +248,7 @@ impl Mover {
             request,
             done: Some(done),
             previous,
+            room,
             phase: Phase::Showing,
             since: Instant::now(),
             attempt: 0,
@@ -282,7 +335,8 @@ impl Mover {
                     }
                 }
                 Ok(None) if elapsed >= MOVE_SHOW_TIMEOUT => {
-                    self.finish(Err(MoveError::NotOnScreen))
+                    let room = self.job.borrow().as_ref().and_then(|job| job.room);
+                    self.finish(Err(not_on_screen(room)))
                 }
                 Ok(None) => {}
             },
@@ -363,5 +417,59 @@ impl Mover {
             Err(InputError::Busy) => self.set_phase(Phase::WaitingIdle),
             Err(err) => self.finish(Err(MoveError::Input(err.to_string()))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOTCHED: MenuBarRoom = MenuBarRoom {
+        needed: 1240.0,
+        free: 662.0,
+        notch: true,
+    };
+
+    #[test]
+    fn a_shortfall_explains_the_timeout() {
+        assert_eq!(
+            not_on_screen(Some(NOTCHED)),
+            MoveError::NoRoom {
+                needed: 1240,
+                free: 662,
+                notch: true
+            }
+        );
+        let text = not_on_screen(Some(NOTCHED)).to_string();
+        assert!(text.contains("about 1240 pt"), "{text}");
+        assert!(
+            text.contains("662 pt are free right of the notch"),
+            "{text}"
+        );
+        let wide = MenuBarRoom {
+            notch: false,
+            free: 1000.0,
+            ..NOTCHED
+        };
+        assert!(
+            not_on_screen(Some(wide))
+                .to_string()
+                .contains("on this display")
+        );
+    }
+
+    #[test]
+    fn without_a_shortfall_the_timeout_stays_generic() {
+        assert_eq!(not_on_screen(None), MoveError::NotOnScreen);
+        let fits = MenuBarRoom {
+            needed: 625.0,
+            ..NOTCHED
+        };
+        assert_eq!(not_on_screen(Some(fits)), MoveError::NotOnScreen);
+        let exact = MenuBarRoom {
+            needed: 662.0,
+            ..NOTCHED
+        };
+        assert_eq!(not_on_screen(Some(exact)), MoveError::NotOnScreen);
     }
 }

@@ -661,7 +661,11 @@ menu bar items.
   events.
 - If the revealed section does not fit next to the app menus or the notch,
   macOS draws only what fits. An item that never reaches the screen is not
-  clicked; the app gives up after 1 s. With Use Ice Bar off, Hide app menus
+  clicked; the app gives up after 1 s. A move that times out the same way
+  reports "not enough room" with the width its sections need (from the
+  layout read when the move starts, collapsed dividers counted as 30 pt
+  when expanded) and the width free on the active menu bar (right of the
+  notch, or the whole display without one). With Use Ice Bar off, Hide app menus
   frees the room the app menus take (see
   [Hide application menus](#hide-application-menus-v16)); nothing frees the
   notch.

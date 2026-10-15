@@ -31,8 +31,9 @@ use super::capture::{self, ItemImage};
 use super::events::{self, InputError};
 use super::ice_bar::{BarItem, ClickHandler, IceBar};
 use super::layout_pane::{self, LayoutSnapshot};
+use super::menu_bar_space;
 use super::menu_icon::{self, CustomIcon};
-use super::mover::{MoveCallback, MoveRequest, Mover, MoverHost};
+use super::mover::{MenuBarRoom, MoveCallback, MoveRequest, Mover, MoverHost};
 use super::permissions;
 use super::settings_window::{Page, SettingsHost, SettingsWindow};
 use super::status::{self, StatusItems};
@@ -41,11 +42,14 @@ use super::updater::Updater;
 use super::windows;
 use crate::bar_layout::{layout, overflow_label, text_tile_size};
 use crate::chain::{DividerLookup, find_divider_or_frame, find_titled, section_chains};
-use crate::geometry::{self, ControlOrder, Display, MenuBarDisplay, cg_to_appkit, ice_bar_frame};
+use crate::geometry::{
+    self, COLLAPSED_DIVIDER_WIDTH, ControlOrder, Display, MenuBarDisplay, SectionWidths,
+    cg_to_appkit, ice_bar_frame, room_needed, status_item_room,
+};
 use crate::menu_icon::IconStyle;
 use crate::model::{
-    BAR_PADDING, CLICK_SETTLE_POLL, CLICK_SETTLE_TIMEOUT, ControlFrames, ControlNames, REHIDE_TICK,
-    Rect, WindowId, WindowRecord, is_menu_layer,
+    BAR_PADDING, CLICK_SETTLE_POLL, CLICK_SETTLE_TIMEOUT, ControlFrames, ControlNames,
+    DIVIDER_MIN_WIDTH, REHIDE_TICK, Rect, WindowId, WindowRecord, is_menu_layer,
 };
 use crate::rehide::{Activity, Decision, Rehide};
 use crate::sections::{MenuBarState, Section};
@@ -182,6 +186,10 @@ impl MoverHost for Host {
     fn active_display(&self, windows: &[WindowRecord]) -> Option<Rect> {
         let c = self.0.upgrade()?;
         c.menu_bar_place(windows, None).map(|p| p.display.bounds)
+    }
+
+    fn menu_bar_room(&self, state: MenuBarState) -> Option<MenuBarRoom> {
+        self.0.upgrade()?.menu_bar_room(state)
     }
 }
 
@@ -781,6 +789,50 @@ impl Controller {
                  far left to change that"
             );
         }
+    }
+
+    /// The room the sections shown in `state` need, from the current layout,
+    /// and the room the active menu bar has for status items (right of the
+    /// notch when there is one).
+    fn menu_bar_room(&self, state: MenuBarState) -> Option<MenuBarRoom> {
+        let all = windows::list_windows();
+        let frames = self.control_frames();
+        let DividerLookup::Found(hidden) = self.find_hidden(&all, &frames) else {
+            return None;
+        };
+        let always = match self.find_always_hidden(&all, &frames) {
+            DividerLookup::Found(d) => Some(d),
+            _ => None,
+        };
+        let chains = section_chains(&all, &hidden, always.as_ref());
+        let width = |items: &[WindowRecord]| items.iter().map(|w| w.bounds.width).sum::<f64>();
+        // An expanded divider's collapsed width is not known.
+        let collapsed = |d: &WindowRecord| {
+            if d.bounds.width < DIVIDER_MIN_WIDTH {
+                d.bounds.width
+            } else {
+                COLLAPSED_DIVIDER_WIDTH
+            }
+        };
+        let widths = SectionWidths {
+            visible: width(&chains.visible),
+            hidden: width(&chains.hidden),
+            always_hidden: width(&chains.always_hidden),
+            hidden_divider: collapsed(&hidden),
+            always_hidden_divider: always.as_ref().map_or(0.0, collapsed),
+        };
+        let display = self
+            .menu_bar_place(&windows::list_on_screen(), None)?
+            .display
+            .bounds;
+        let notch = menu_bar_space::notches(self.mtm, windows::primary_height())
+            .into_iter()
+            .find(|n| triggers::overlaps(n, &display));
+        Some(MenuBarRoom {
+            needed: room_needed(state, &widths),
+            free: status_item_room(&display, notch.as_ref()),
+            notch: notch.is_some(),
+        })
     }
 
     /// Our three control item windows in CG space, from AppKit. The icon's

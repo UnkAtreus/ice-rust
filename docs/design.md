@@ -1010,3 +1010,33 @@ deactivates. Off while Use Ice Bar is on. Default on.
 
 Difference from Ice: switching to another app ends the hiding at once; Ice
 stays `.regular` until the sections hide.
+
+## L13: moves that need more room than the notch leaves (2026-10-15)
+
+Maintainer report (screenshot): Menu Bar Layout showed "Move failed: the
+item or its neighbor did not appear on screen within 1 s" while the
+built-in display (1512 pt, notch) had the active menu bar.
+
+Evidence (`probe --json`, read-only): visible 10 items, 491 pt; hidden 3
+items, 104 pt; always-hidden 16 items, 585 pt. Notch CG (-847, 1080, 185,
+32), so status items have 1512 - 850 = 662 pt right of it. A move shows the
+sections it touches (`MenuBarState::covering`): visible plus hidden needs
+about 625 pt and fits; any move into or out of the always-hidden section
+shows every section, about 1240 pt, and macOS draws only what fits right of
+the notch. The item or its neighbor never reaches the screen, and the move
+times out. On the 2560 pt displays used before, everything fits. Hide app
+menus cannot help: the limit is the notch, and Settings (ice-rust's own
+short menus) is in front during a move.
+
+Change: the move reads the room when it starts (`MoverHost::menu_bar_room`:
+section widths from the chain walk, collapsed dividers counted as 30 pt
+when expanded, and `geometry::status_item_room`, the width right of the
+notch). A timeout with more room needed than free reports `NoRoom`: "not
+enough room in the menu bar: this move shows sections that need about
+1240 pt, and 662 pt are free right of the notch. Try it while a wider
+display has the menu bar". Other timeouts keep the old message. Nothing is
+refused up front, since the estimate could be off by a divider. The layout
+page now wraps its message line, up to three lines.
+
+Not done: moving off-screen items without showing them, which Ice does
+through a private event relay.

@@ -568,7 +568,11 @@ define_class!(
     }
 );
 
-fn text_attributes(font: &NSFont, color: &NSColor) -> Retained<NSDictionary<NSString, AnyObject>> {
+fn text_attributes(
+    font: &NSFont,
+    color: &NSColor,
+    line_break: NSLineBreakMode,
+) -> Retained<NSDictionary<NSString, AnyObject>> {
     // SAFETY: the keys are immutable NSString constants exported by AppKit.
     let (font_key, color_key, paragraph_key) = unsafe {
         (
@@ -578,7 +582,7 @@ fn text_attributes(font: &NSFont, color: &NSColor) -> Retained<NSDictionary<NSSt
         )
     };
     let paragraph = NSMutableParagraphStyle::new();
-    paragraph.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    paragraph.setLineBreakMode(line_break);
     let values: [&AnyObject; 3] = [font.as_ref(), color.as_ref(), paragraph.as_ref()];
     NSDictionary::from_slices(&[font_key, color_key, paragraph_key], &values)
 }
@@ -586,7 +590,7 @@ fn text_attributes(font: &NSFont, color: &NSColor) -> Retained<NSDictionary<NSSt
 /// Draws one line of text in `frame`, cut off with an ellipsis when it
 /// does not fit.
 fn draw_text(text: &str, frame: &Rect, font: &NSFont, color: &NSColor) {
-    let attributes = text_attributes(font, color);
+    let attributes = text_attributes(font, color, NSLineBreakMode::ByTruncatingTail);
     // SAFETY: the attributes map NSAttributedStringKey values to an NSFont,
     // an NSColor and an NSParagraphStyle, the types AppKit expects.
     unsafe {
@@ -594,8 +598,22 @@ fn draw_text(text: &str, frame: &Rect, font: &NSFont, color: &NSColor) {
     }
 }
 
+/// Draws text in `frame`, wrapped at word boundaries; lines below the frame
+/// are cut off.
+fn draw_wrapped_text(text: &str, frame: &Rect, font: &NSFont, color: &NSColor) {
+    let attributes = text_attributes(font, color, NSLineBreakMode::ByWordWrapping);
+    // SAFETY: as in `draw_text`.
+    unsafe {
+        NSString::from_str(text).drawInRect_withAttributes(ns(frame), Some(&attributes));
+    }
+}
+
 fn text_width(text: &str, font: &NSFont) -> f64 {
-    let attributes = text_attributes(font, &NSColor::labelColor());
+    let attributes = text_attributes(
+        font,
+        &NSColor::labelColor(),
+        NSLineBreakMode::ByTruncatingTail,
+    );
     // SAFETY: as in `draw_text`.
     unsafe { NSString::from_str(text).sizeWithAttributes(Some(&attributes)) }.width
 }
@@ -999,9 +1017,11 @@ impl LayoutCanvas {
             } else {
                 NSColor::secondaryLabelColor()
             };
-            draw_text(
+            // Up to three lines; a long error, such as not enough room in
+            // the menu bar, wraps.
+            draw_wrapped_text(
                 text,
-                &Rect::new(2.0, last.bar.max_y() + 8.0, last.bar.width - 4.0, 18.0),
+                &Rect::new(2.0, last.bar.max_y() + 8.0, last.bar.width - 4.0, 54.0),
                 &body,
                 &color,
             );

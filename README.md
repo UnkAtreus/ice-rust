@@ -461,7 +461,11 @@ What these numbers do not cover:
   Layout bars scroll instead.
 - **Room in the menu bar.** If a revealed section does not fit next to the
   app menus or the notch, macOS draws only what fits, and click-through gives
-  up on an item that does not reach the screen within 1 s. With Use Ice Bar
+  up on an item that does not reach the screen within 1 s. A move in Menu
+  Bar Layout fails the same way and then says how much room its sections
+  need and how much the menu bar has. On a MacBook with a notch only the
+  part right of the notch counts, so moves into or out of a large
+  always-hidden section may need a wider display. With Use Ice Bar
   off, Hide app menus makes room by hiding the app's menus; nothing frees
   the space the notch takes.
 - **Main-thread waits.** The Menu Bar Layout page waits on the main thread
