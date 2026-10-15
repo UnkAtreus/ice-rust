@@ -1,7 +1,7 @@
 //! The three status items: the icon, the hidden-section divider and the
 //! always-hidden-section divider.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
@@ -9,7 +9,7 @@ use objc2::runtime::{AnyObject, Sel};
 use objc2_app_kit::{NSEventMask, NSImage, NSMenu, NSStatusBar, NSStatusBarButton, NSStatusItem};
 use objc2_foundation::{NSProcessInfo, NSString};
 
-use super::brand;
+use super::menu_icon::IconImages;
 use crate::model::{
     ALWAYS_HIDDEN_AUTOSAVE, DIVIDER_AUTOSAVE, HIDE_LENGTH, ICON_AUTOSAVE, Rect, VARIABLE_LENGTH,
 };
@@ -97,6 +97,10 @@ pub struct StatusItems {
     hidden: Retained<NSStatusItem>,
     always_hidden: Retained<NSStatusItem>,
     state: Cell<MenuBarState>,
+    /// The icon's images for the chosen style (v1.4); `None` shows a
+    /// symbol or "...".
+    icon_images: RefCell<Option<IconImages>>,
+    icon_active: Cell<bool>,
 }
 
 impl StatusItems {
@@ -108,7 +112,12 @@ impl StatusItems {
     ///
     /// `target` must stay alive as long as the status items, and must
     /// implement `action` with the signature `-(void)action:(id)sender`.
-    pub unsafe fn create(mtm: MainThreadMarker, target: &AnyObject, action: Sel) -> Self {
+    pub unsafe fn create(
+        mtm: MainThreadMarker,
+        target: &AnyObject,
+        action: Sel,
+        icon_images: Option<IconImages>,
+    ) -> Self {
         // v1.1 seeded the always-hidden divider directly left of the hidden
         // divider (L1). Its stored position is removed once, before the
         // items exist, so AppKit places that divider instead.
@@ -173,6 +182,8 @@ impl StatusItems {
             hidden,
             always_hidden,
             state: Cell::new(MenuBarState::AllShown),
+            icon_images: RefCell::new(icon_images),
+            icon_active: Cell::new(true),
         };
         // Collapsed: nothing expands before the live order is known.
         items.set_state(MenuBarState::AllShown);
@@ -237,21 +248,39 @@ impl StatusItems {
         self.state.set(state);
     }
 
-    /// Filled icon while a section is revealed or the Ice Bar is open.
+    /// The shown image while a section is revealed or the Ice Bar is
+    /// open, the hidden image otherwise.
     pub fn set_icon_active(&self, active: bool) {
-        if let Some(button) = self.icon.button(self.mtm) {
-            if let Some(glyph) = brand::menu_glyph(active) {
-                button.setImage(Some(&glyph));
-                button.setTitle(&NSString::new());
-                return;
-            }
-            let name = if active {
-                "ellipsis.circle.fill"
+        self.icon_active.set(active);
+        self.show_icon();
+    }
+
+    /// Switches the icon to new images, keeping its state.
+    pub fn set_icon_images(&self, images: Option<IconImages>) {
+        *self.icon_images.borrow_mut() = images;
+        self.show_icon();
+    }
+
+    fn show_icon(&self) {
+        let Some(button) = self.icon.button(self.mtm) else {
+            return;
+        };
+        let active = self.icon_active.get();
+        if let Some(images) = &*self.icon_images.borrow() {
+            button.setImage(Some(if active {
+                &images.shown
             } else {
-                "ellipsis.circle"
-            };
-            set_look(&button, Some(name), "...");
+                &images.hidden
+            }));
+            button.setTitle(&NSString::new());
+            return;
         }
+        let name = if active {
+            "ellipsis.circle.fill"
+        } else {
+            "ellipsis.circle"
+        };
+        set_look(&button, Some(name), "...");
     }
 
     /// Pops up `menu` from the icon.

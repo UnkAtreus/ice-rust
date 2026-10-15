@@ -50,6 +50,11 @@ it (see [Differences from Ice](#differences-from-ice)).
 - **Auto-rehide.** A revealed section hides again after an idle interval
   (15 s by default, 5 to 60 s in Settings) while the pointer is outside the
   menu bar and no menu or panel is open.
+- **Icon styles.** Choose the icon on the General page: the ice-rust logo
+  (the default), Dot, Ellipsis, Chevron, Arrow, Eye, Door, Sunglasses,
+  Snowflake, Grid, Star, or an image file of your own. Each built-in style
+  changes while hidden items are shown. A custom image can take the menu
+  bar's text color or keep its own colors.
 - **Launch at login.** A switch on the General page registers IceRust.app as
   a login item through macOS's `SMAppService`.
 - **Automatic updates.** ice-rust checks GitHub Releases once a day, asks
@@ -151,8 +156,8 @@ Planned, in rough priority order. Nothing here is implemented yet.
 </p>
 
 `ice-rust render-settings` drew both pages offscreen. With
-`--default-settings`, the General page shows the defaults: Use Ice Bar on,
-Automatically rehide on, rehide after 15 s. The offscreen render draws the
+`--default-settings`, the General page shows the defaults: the ice-rust Logo
+icon, Use Ice Bar on, Automatically rehide on, rehide after 15 s. The offscreen render draws the
 track of a switch that is on in gray; the knob at the right marks it on.
 
 ## Requirements
@@ -322,6 +327,8 @@ and runtime observations.
   always-hidden). Ice's default collapses them to zero width through an
   AppKit layout constraint.
 - Use Ice Bar defaults to on. Ice defaults it to off.
+- The built-in icon styles are SF Symbols, apart from the ice-rust logo. Ice
+  draws its own artwork for each style and defaults to Dot.
 - An always-hidden divider that ends up right of the hidden divider is
   reported on stderr and left in place. Ice moves it back.
 

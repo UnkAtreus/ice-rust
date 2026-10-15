@@ -851,3 +851,27 @@ L11 fixed in 0.1.3: release notes go through `plain_notes` before
 instead of list markers, joined wrapped lines, and no `**`, `__`,
 backticks or link targets.
 
+
+## v1.4: menu bar icon styles (maintainer request 2026-10-15)
+
+Request: the icon that shows and hides the hidden items had only the
+ice-rust logo; offer several looks and let the user change it.
+
+| Part | Choice |
+|---|---|
+| Styles | `menu_icon::IconStyle`: the logo (default), ten SF Symbols pairs (Dot, Ellipsis, Chevron, Arrow, Eye, Door, Sunglasses, Snowflake, Grid, Star) and Custom Image. Ice offers a similar list (Arrow, Chevron, Door, Dot, Ellipsis, Ice Cube, Sunglasses, Custom) with its own artwork; SF Symbols ship with macOS, so ice-rust adds no artwork. |
+| States | Each style has an image for items hidden and one for items shown (a section revealed or the Ice Bar open), as the logo already had. Most fill in; Chevron and Arrow turn around, Eye and Door open, Sunglasses come off. Both images of a pair have the same width, so the menu bar does not shift by a point when the state changes. |
+| Size | Symbols at their default size, the same as the divider chevrons. |
+| Custom image | Converted once into a PNG fitted to 24 x 18 pt at 3x and stored in defaults (`CustomIconImage`), so the original file can move. Match menu bar color (`TintCustomIcon`) makes it a template image; its first value comes from `menu_icon::suggests_tint` (some clear pixels, at most 2 % colored pixels). |
+| Fallback | Missing symbols, or Custom Image without a stored image, show the logo. |
+| UI | A Menu bar icon group at the top of the General page: the style popup with each style's image, then Choose Image... and the Match menu bar color checkbox (enabled for Custom Image). Picking Custom Image with no stored image opens the panel; cancelling it puts the popup back. |
+
+Verified on the development host (macOS 26.3): unit tests for the style
+keys, the symbol pairs, the fit and the tint suggestion; every style's
+images load with the template flag and the accessibility description; the
+Custom fallback shows the logo; PNG, JPEG, HEIC, TIFF, PDF and SVG files
+convert (a 4000 x 1000 image becomes 72 x 18 px, a 4 x 4 image grows to
+54 x 54), the tint suggestion is on for black and white glyphs and off for
+the colored app icon and opaque images, and a text file, an empty file and
+a missing file are refused. `render-settings --page general` drew the
+group with the logo, Eye and a colored custom image.

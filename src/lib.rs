@@ -11,6 +11,7 @@ pub mod geometry;
 pub mod image_check;
 pub mod input_tag;
 pub mod login_item;
+pub mod menu_icon;
 pub mod model;
 pub mod rehide;
 pub mod sections;

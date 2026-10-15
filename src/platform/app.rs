@@ -31,6 +31,7 @@ use super::capture::{self, ItemImage};
 use super::events::{self, InputError};
 use super::ice_bar::{BarItem, ClickHandler, IceBar};
 use super::layout_pane::{self, LayoutSnapshot};
+use super::menu_icon::{self, CustomIcon};
 use super::mover::{MoveCallback, MoveRequest, Mover, MoverHost};
 use super::permissions;
 use super::settings_window::{Page, SettingsHost, SettingsWindow};
@@ -41,13 +42,14 @@ use super::windows;
 use crate::bar_layout::{layout, overflow_label, text_tile_size};
 use crate::chain::{DividerLookup, find_divider_or_frame, find_titled, section_chains};
 use crate::geometry::{self, ControlOrder, Display, MenuBarDisplay, cg_to_appkit, ice_bar_frame};
+use crate::menu_icon::IconStyle;
 use crate::model::{
     BAR_PADDING, CLICK_SETTLE_POLL, CLICK_SETTLE_TIMEOUT, ControlFrames, ControlNames, REHIDE_TICK,
     Rect, WindowId, WindowRecord, is_menu_layer,
 };
 use crate::rehide::{Activity, Decision, Rehide};
 use crate::sections::{MenuBarState, Section};
-use crate::settings::{self, Settings};
+use crate::settings::{self, KEY_CUSTOM_ICON_IMAGE, Settings};
 
 /// Ignore a reopen request this soon after a click outside closed the bar,
 /// since that click may have been on the icon itself.
@@ -191,6 +193,12 @@ impl SettingsHost for Host {
         }
     }
 
+    fn set_custom_icon(&self, icon: &CustomIcon) {
+        if let Some(c) = self.0.upgrade() {
+            c.set_custom_icon(icon);
+        }
+    }
+
     fn load_layout(&self) -> LayoutSnapshot {
         match self.0.upgrade() {
             Some(c) => c.load_layout(),
@@ -322,7 +330,14 @@ impl Controller {
         let rehide = Rehide::new(settings.rehide_interval, Instant::now());
         // SAFETY: `target` lives for the whole app run and implements
         // iconClicked: with the required signature.
-        let status = unsafe { StatusItems::create(mtm, target, sel!(iconClicked:)) };
+        let status = unsafe {
+            StatusItems::create(
+                mtm,
+                target,
+                sel!(iconClicked:),
+                menu_icon::icon_images(settings.icon_style, settings.tint_custom_icon),
+            )
+        };
 
         let menu = NSMenu::new(mtm);
         let toggle_item = menu_item(
@@ -608,6 +623,31 @@ impl Controller {
                 self.close_bar();
             }
         }
+        if previous.icon_style != next.icon_style
+            || previous.tint_custom_icon != next.tint_custom_icon
+        {
+            self.refresh_icon();
+        }
+    }
+
+    /// Stores a newly chosen custom image and switches the icon to it, with
+    /// the tint its colors suggest.
+    fn set_custom_icon(&self, icon: &CustomIcon) {
+        settings::write_data(KEY_CUSTOM_ICON_IMAGE, &icon.png);
+        let mut next = self.settings.borrow().clone();
+        next.icon_style = IconStyle::Custom;
+        next.tint_custom_icon = icon.tint;
+        self.apply_settings(&next);
+        // The style and tint may be unchanged while the image is new.
+        self.refresh_icon();
+    }
+
+    /// Reloads the icon's images from the settings and the stored custom
+    /// image.
+    fn refresh_icon(&self) {
+        let s = self.settings.borrow().clone();
+        self.status
+            .set_icon_images(menu_icon::icon_images(s.icon_style, s.tint_custom_icon));
     }
 
     /// The state the user last asked for: while a move runs, the state the

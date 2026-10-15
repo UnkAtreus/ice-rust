@@ -7,22 +7,26 @@ use std::path::Path;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
+use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSBackingStoreType, NSBezierPath, NSBitmapImageFileType, NSButton, NSColor,
     NSColorRenderingIntent, NSColorSpace, NSControl, NSControlStateValueOff, NSControlStateValueOn,
-    NSEvent, NSImageScaling, NSImageView, NSProgressIndicator, NSProgressIndicatorStyle,
-    NSResponder, NSSlider, NSSwitch, NSTextAlignment, NSTextField, NSView,
-    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindow, NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
+    NSEvent, NSImageScaling, NSImageView, NSModalResponse, NSModalResponseOK, NSOpenPanel,
+    NSPopUpButton, NSProgressIndicator, NSProgressIndicatorStyle, NSResponder, NSSlider, NSSwitch,
+    NSTextAlignment, NSTextField, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+    NSVisualEffectState, NSVisualEffectView, NSWindow, NSWindowStyleMask, NSWindowTitleVisibility,
+    NSWorkspace,
 };
-use objc2_foundation::{NSDictionary, NSObject, NSRect, NSSize, NSString, NSTimer, NSURL};
+use objc2_foundation::{NSArray, NSDictionary, NSObject, NSRect, NSSize, NSString, NSTimer, NSURL};
+use objc2_uniform_type_identifiers::UTType;
 
 use super::brand;
 use super::layout_pane::{LayoutCanvas, LayoutSnapshot};
 use super::login_item;
+use super::menu_icon::{self, CustomIcon};
 use super::mover::{MoveCallback, MoveError, MoveRequest};
 use super::permissions;
 use super::timer;
@@ -32,6 +36,7 @@ use super::ui::{
 };
 use crate::arrange::{DropOutcome, drop_destination, model_matches};
 use crate::login_item as login;
+use crate::menu_icon::IconStyle;
 use crate::model::{LAYOUT_REFRESH, PERMISSIONS_REFRESH, WindowId};
 use crate::sections::Section;
 use crate::settings::{Settings, UI_REHIDE_MAX_SECONDS, UI_REHIDE_MIN_SECONDS, ui_rehide_seconds};
@@ -46,6 +51,9 @@ const MARGIN: f64 = 24.0;
 /// settled back.
 const SETTLE_AFTER_MOVE: Duration = Duration::from_millis(300);
 
+/// The Custom image row's note while nothing went wrong.
+const CUSTOM_NOTE: &str = "Used by Custom Image";
+
 const SCREEN_RECORDING_PANE: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
 const ACCESSIBILITY_PANE: &str =
@@ -56,6 +64,8 @@ pub trait SettingsHost {
     fn settings(&self) -> Settings;
     /// Saves and applies new settings at once.
     fn apply_settings(&self, settings: &Settings);
+    /// Stores a chosen custom icon image and switches the icon to it.
+    fn set_custom_icon(&self, icon: &CustomIcon);
     fn load_layout(&self) -> LayoutSnapshot;
     fn request_move(&self, request: MoveRequest, done: MoveCallback);
     /// The window is closing.
@@ -225,6 +235,9 @@ impl SidebarRow {
 }
 
 struct GeneralParts {
+    icon_style: Retained<NSPopUpButton>,
+    custom_note: Retained<NSTextField>,
+    custom_tint: Retained<NSButton>,
     use_bar: Retained<NSSwitch>,
     auto_rehide: Retained<NSSwitch>,
     interval: Retained<NSSlider>,
@@ -573,7 +586,118 @@ impl SettingsWindow {
         self.general
             .auto_updates
             .setState(switch_state(s.auto_check_updates));
+        self.sync_icon();
         self.sync_login();
+    }
+
+    /// Shows the stored icon style and tint, and the custom image in the
+    /// popup's Custom Image item.
+    fn sync_icon(&self) {
+        let s = self.host.settings();
+        let index = IconStyle::ALL
+            .iter()
+            .position(|&style| style == s.icon_style)
+            .unwrap_or(0);
+        self.general.icon_style.selectItemAtIndex(index as isize);
+        self.set_custom_preview(s.tint_custom_icon);
+        self.general
+            .custom_tint
+            .setState(switch_state(s.tint_custom_icon));
+        self.general
+            .custom_tint
+            .setEnabled(s.icon_style == IconStyle::Custom);
+        self.set_custom_note(CUSTOM_NOTE, false);
+    }
+
+    fn set_custom_preview(&self, tint: bool) {
+        let index = IconStyle::ALL.len() - 1;
+        if let Some(item) = self.general.icon_style.itemAtIndex(index as isize) {
+            item.setImage(menu_icon::stored_custom(tint).as_deref());
+        }
+    }
+
+    fn set_custom_note(&self, text: &str, error: bool) {
+        let note = &self.general.custom_note;
+        note.setStringValue(&NSString::from_str(text));
+        note.setToolTip(error.then(|| NSString::from_str(text)).as_deref());
+        let color = if error {
+            NSColor::systemRedColor()
+        } else {
+            NSColor::secondaryLabelColor()
+        };
+        note.setTextColor(Some(&color));
+    }
+
+    fn selected_style(&self) -> IconStyle {
+        usize::try_from(self.general.icon_style.indexOfSelectedItem())
+            .ok()
+            .and_then(|i| IconStyle::ALL.get(i).copied())
+            .unwrap_or_default()
+    }
+
+    /// The icon popup changed. Custom Image without a stored image asks
+    /// for one first.
+    fn icon_style_changed(&self) {
+        if self.selected_style() == IconStyle::Custom && menu_icon::stored_custom(true).is_none() {
+            self.choose_custom_icon();
+        } else {
+            self.general_changed(false);
+        }
+    }
+
+    /// Asks for an image file in a sheet on the window.
+    fn choose_custom_icon(&self) {
+        let panel = NSOpenPanel::openPanel(self.mtm);
+        panel.setCanChooseFiles(true);
+        panel.setCanChooseDirectories(false);
+        panel.setAllowsMultipleSelection(false);
+        if let Some(image) = UTType::typeWithIdentifier(&NSString::from_str("public.image")) {
+            panel.setAllowedContentTypes(&NSArray::from_retained_slice(&[image]));
+        }
+        panel.setMessage(Some(&NSString::from_str(
+            "Choose an image for the menu bar icon",
+        )));
+        panel.setPrompt(Some(&NSString::from_str("Choose")));
+        let me = self.me.clone();
+        // The handler keeps the panel to read its URL; AppKit releases the
+        // handler once the sheet ends.
+        let chosen = panel.clone();
+        let handler = RcBlock::new(move |response: NSModalResponse| {
+            let path = (response == NSModalResponseOK)
+                .then(|| chosen.URL())
+                .flatten()
+                .and_then(|url| url.path())
+                .map(|path| path.to_string());
+            if let Some(w) = me.upgrade() {
+                w.custom_icon_chosen(path);
+            }
+        });
+        panel.beginSheetModalForWindow_completionHandler(&self.window, &handler);
+    }
+
+    /// The open panel ended. A cancelled panel or an image that fails to
+    /// load puts the popup back on the stored style.
+    fn custom_icon_chosen(&self, path: Option<String>) {
+        let Some(path) = path else {
+            self.sync_icon();
+            return;
+        };
+        let path = Path::new(&path);
+        match menu_icon::prepare_custom(path) {
+            Ok(icon) => {
+                self.host.set_custom_icon(&icon);
+                self.sync_icon();
+            }
+            Err(err) => {
+                self.sync_icon();
+                let name = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |n| n.to_string_lossy().into(),
+                );
+                eprintln!("ice-rust: custom icon {}: {err}", path.display());
+                self.set_custom_note(&format!("{name}: {err}"), true);
+            }
+        }
     }
 
     /// Shows the login item's state: switch, note and approval button.
@@ -625,6 +749,8 @@ impl SettingsWindow {
         s.use_ice_bar = self.general.use_bar.state() == NSControlStateValueOn;
         s.auto_rehide = self.general.auto_rehide.state() == NSControlStateValueOn;
         s.auto_check_updates = self.general.auto_updates.state() == NSControlStateValueOn;
+        s.icon_style = self.selected_style();
+        s.tint_custom_icon = self.general.custom_tint.state() == NSControlStateValueOn;
         let seconds = if slider_moved {
             let seconds = self
                 .general
@@ -641,6 +767,10 @@ impl SettingsWindow {
             .interval_value
             .setStringValue(&NSString::from_str(&seconds_text(seconds)));
         self.general.interval.setEnabled(s.auto_rehide);
+        self.general
+            .custom_tint
+            .setEnabled(s.icon_style == IconStyle::Custom);
+        self.set_custom_preview(s.tint_custom_icon);
         self.host.apply_settings(&s);
     }
 
@@ -882,7 +1012,11 @@ fn build_general(
     targets: &mut Vec<Retained<ActionTarget>>,
 ) -> GeneralParts {
     const ROW: f64 = 56.0;
-    let group = RoundedBox::new(mtm, rect(MARGIN, 8.0, width, 3.0 * ROW), BoxStyle::Group);
+    let (icon_style, custom_note, custom_tint) =
+        build_icon_group(mtm, page, width, ROW, settings, me, targets);
+
+    let first = 8.0 + 2.0 * ROW + 16.0;
+    let group = RoundedBox::new(mtm, rect(MARGIN, first, width, 3.0 * ROW), BoxStyle::Group);
     add(page, &group, Follow::Width);
     // Rows with a switch leave room for it; the slider row for the slider.
     let text_width = width - 100.0;
@@ -974,7 +1108,7 @@ fn build_general(
     }
 
     // Launch at login and updates (v1.3).
-    let top = 8.0 + 3.0 * ROW + 16.0;
+    let top = first + 3.0 * ROW + 16.0;
     let system = RoundedBox::new(mtm, rect(MARGIN, top, width, 2.0 * ROW), BoxStyle::Group);
     add(page, &system, Follow::Width);
     add(
@@ -1059,6 +1193,9 @@ fn build_general(
     );
 
     GeneralParts {
+        icon_style,
+        custom_note,
+        custom_tint,
         use_bar,
         auto_rehide,
         interval,
@@ -1068,6 +1205,112 @@ fn build_general(
         login_button,
         auto_updates,
     }
+}
+
+/// The Menu bar icon group (v1.4): the style popup, and a row to choose
+/// the custom image and whether it takes the menu bar's color.
+fn build_icon_group(
+    mtm: MainThreadMarker,
+    page: &NSView,
+    width: f64,
+    row: f64,
+    settings: &Settings,
+    me: &Weak<SettingsWindow>,
+    targets: &mut Vec<Retained<ActionTarget>>,
+) -> (
+    Retained<NSPopUpButton>,
+    Retained<NSTextField>,
+    Retained<NSButton>,
+) {
+    let group = RoundedBox::new(mtm, rect(MARGIN, 8.0, width, 2.0 * row), BoxStyle::Group);
+    add(page, &group, Follow::Width);
+
+    row_text(
+        mtm,
+        &group,
+        "Menu bar icon",
+        "The icon you click to show and hide items",
+        16.0,
+        11.0,
+        width - 240.0,
+    );
+    let icon_style = NSPopUpButton::initWithFrame_pullsDown(
+        NSPopUpButton::alloc(mtm),
+        rect(width - 196.0, 15.0, 180.0, 26.0),
+        false,
+    );
+    for style in IconStyle::ALL {
+        icon_style.addItemWithTitle(&NSString::from_str(style.title()));
+        // The Custom Image item gets its image from `sync_icon`.
+        let image = menu_icon::style_images(style, true).map(|images| images.hidden);
+        if let (Some(item), Some(image)) = (icon_style.lastItem(), image) {
+            item.setImage(Some(&image));
+        }
+    }
+    add(&group, &icon_style, Follow::Right);
+    separator(mtm, &group, row, width);
+
+    let text_width = width - 360.0;
+    add(
+        &group,
+        &label(
+            mtm,
+            "Custom image",
+            rect(16.0, row + 11.0, text_width, 17.0),
+            13.0,
+            Weight::Medium,
+            &NSColor::labelColor(),
+        ),
+        Follow::Width,
+    );
+    let custom_note = label(
+        mtm,
+        CUSTOM_NOTE,
+        rect(16.0, row + 30.0, text_width, 15.0),
+        11.0,
+        Weight::Regular,
+        &NSColor::secondaryLabelColor(),
+    );
+    add(&group, &custom_note, Follow::Width);
+    // SAFETY: no target or action yet; both are set by `attach` below.
+    let choose = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str("Choose Image..."),
+            None,
+            None,
+            mtm,
+        )
+    };
+    choose.setFrame(rect(width - 344.0, row + 13.0, 140.0, 30.0));
+    add(&group, &choose, Follow::Right);
+    // SAFETY: as above.
+    let custom_tint = unsafe {
+        NSButton::checkboxWithTitle_target_action(
+            &NSString::from_str("Match menu bar color"),
+            None,
+            None,
+            mtm,
+        )
+    };
+    custom_tint.setFrame(rect(width - 196.0, row + 18.0, 180.0, 20.0));
+    custom_tint.setState(switch_state(settings.tint_custom_icon));
+    custom_tint.setEnabled(settings.icon_style == IconStyle::Custom);
+    add(&group, &custom_tint, Follow::Right);
+
+    let mut attach = |control: &NSControl, action: fn(&SettingsWindow)| {
+        let me = me.clone();
+        let target = ActionTarget::new(mtm, move |_| {
+            if let Some(w) = me.upgrade() {
+                action(&w);
+            }
+        });
+        target.attach(control);
+        targets.push(target);
+    };
+    attach(&icon_style, SettingsWindow::icon_style_changed);
+    attach(&choose, SettingsWindow::choose_custom_icon);
+    attach(&custom_tint, |w| w.general_changed(false));
+    (icon_style, custom_note, custom_tint)
 }
 
 fn build_layout(

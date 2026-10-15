@@ -3,12 +3,18 @@
 
 use std::time::Duration;
 
+use crate::menu_icon::IconStyle;
 use crate::model::REHIDE_INTERVAL;
 
 pub const KEY_USE_ICE_BAR: &str = "UseIceBar";
 pub const KEY_AUTO_REHIDE: &str = "AutoRehide";
 pub const KEY_REHIDE_INTERVAL: &str = "RehideInterval";
 pub const KEY_AUTO_CHECK_UPDATES: &str = "AutomaticallyCheckForUpdates";
+pub const KEY_ICON_STYLE: &str = "IconStyle";
+pub const KEY_TINT_CUSTOM_ICON: &str = "TintCustomIcon";
+/// The custom icon as PNG data at 3x (v1.4). Not part of `Settings`: it is
+/// written once when the user chooses an image.
+pub const KEY_CUSTOM_ICON_IMAGE: &str = "CustomIconImage";
 
 /// Longest accepted rehide interval, in seconds.
 pub const MAX_REHIDE_SECONDS: f64 = 3600.0;
@@ -56,6 +62,10 @@ pub struct Settings {
     pub rehide_interval: Duration,
     /// Check GitHub for a new version once a day (v1.3).
     pub auto_check_updates: bool,
+    /// Look of the icon (v1.4).
+    pub icon_style: IconStyle,
+    /// Draw the custom icon in the menu bar's color, as a template image.
+    pub tint_custom_icon: bool,
 }
 
 impl Default for Settings {
@@ -65,6 +75,8 @@ impl Default for Settings {
             auto_rehide: true,
             rehide_interval: REHIDE_INTERVAL,
             auto_check_updates: true,
+            icon_style: IconStyle::default(),
+            tint_custom_icon: true,
         }
     }
 }
@@ -75,6 +87,7 @@ impl Settings {
     pub fn from_lookup(
         get_bool: impl Fn(&str) -> Option<bool>,
         get_f64: impl Fn(&str) -> Option<f64>,
+        get_string: impl Fn(&str) -> Option<String>,
     ) -> Self {
         let defaults = Self::default();
         let rehide_interval = get_f64(KEY_REHIDE_INTERVAL)
@@ -87,6 +100,10 @@ impl Settings {
             rehide_interval,
             auto_check_updates: get_bool(KEY_AUTO_CHECK_UPDATES)
                 .unwrap_or(defaults.auto_check_updates),
+            icon_style: get_string(KEY_ICON_STYLE)
+                .and_then(|key| IconStyle::from_key(&key))
+                .unwrap_or(defaults.icon_style),
+            tint_custom_icon: get_bool(KEY_TINT_CUSTOM_ICON).unwrap_or(defaults.tint_custom_icon),
         }
     }
 }
@@ -190,11 +207,11 @@ pub fn ui_rehide_seconds(interval: Duration) -> f64 {
 
 #[cfg(target_os = "macos")]
 mod store {
-    use objc2_foundation::{NSNumber, NSString, NSUserDefaults};
+    use objc2_foundation::{NSData, NSNumber, NSString, NSUserDefaults};
 
     use super::{
-        KEY_AUTO_CHECK_UPDATES, KEY_AUTO_REHIDE, KEY_REHIDE_INTERVAL, KEY_USE_ICE_BAR, SeedValue,
-        Settings,
+        KEY_AUTO_CHECK_UPDATES, KEY_AUTO_REHIDE, KEY_ICON_STYLE, KEY_REHIDE_INTERVAL,
+        KEY_TINT_CUSTOM_ICON, KEY_USE_ICE_BAR, SeedValue, Settings,
     };
 
     fn has_key(defaults: &NSUserDefaults, key: &str) -> bool {
@@ -207,6 +224,11 @@ mod store {
         Settings::from_lookup(
             |k| has_key(&defaults, k).then(|| defaults.boolForKey(&NSString::from_str(k))),
             |k| has_key(&defaults, k).then(|| defaults.doubleForKey(&NSString::from_str(k))),
+            |k| {
+                defaults
+                    .stringForKey(&NSString::from_str(k))
+                    .map(|s| s.to_string())
+            },
         )
     }
 
@@ -222,6 +244,11 @@ mod store {
         defaults.setBool_forKey(
             settings.auto_check_updates,
             &NSString::from_str(KEY_AUTO_CHECK_UPDATES),
+        );
+        write_string(KEY_ICON_STYLE, settings.icon_style.key());
+        defaults.setBool_forKey(
+            settings.tint_custom_icon,
+            &NSString::from_str(KEY_TINT_CUSTOM_ICON),
         );
     }
 
@@ -267,6 +294,22 @@ mod store {
             .map(|s| s.to_string())
     }
 
+    pub fn read_data(key: &str) -> Option<Vec<u8>> {
+        NSUserDefaults::standardUserDefaults()
+            .dataForKey(&NSString::from_str(key))
+            .map(|data| data.to_vec())
+    }
+
+    pub fn write_data(key: &str, value: &[u8]) {
+        let data = NSData::with_bytes(value);
+        // SAFETY: NSData is a property list type, which is what
+        // NSUserDefaults accepts.
+        unsafe {
+            NSUserDefaults::standardUserDefaults()
+                .setObject_forKey(Some(&data), &NSString::from_str(key))
+        };
+    }
+
     pub fn write_string(key: &str, value: &str) {
         let string = NSString::from_str(value);
         // SAFETY: NSString is a property list type, which is what
@@ -280,8 +323,8 @@ mod store {
 
 #[cfg(target_os = "macos")]
 pub use store::{
-    key_exists, load, read_number, read_string, remove_key, save, write_flag, write_number,
-    write_seed, write_string,
+    key_exists, load, read_data, read_number, read_string, remove_key, save, write_data,
+    write_flag, write_number, write_seed, write_string,
 };
 
 #[cfg(test)]
@@ -302,7 +345,11 @@ mod tests {
         let bools: HashMap<&str, bool> =
             [(KEY_USE_ICE_BAR, false), (KEY_AUTO_REHIDE, false)].into();
         let nums: HashMap<&str, f64> = [(KEY_REHIDE_INTERVAL, 7.5)].into();
-        let s = Settings::from_lookup(|k| bools.get(k).copied(), |k| nums.get(k).copied());
+        let s = Settings::from_lookup(
+            |k| bools.get(k).copied(),
+            |k| nums.get(k).copied(),
+            |_| None,
+        );
         assert!(!s.use_ice_bar);
         assert!(!s.auto_rehide);
         assert_eq!(s.rehide_interval, Duration::from_secs_f64(7.5));
@@ -312,23 +359,47 @@ mod tests {
     fn update_checks_default_on_and_follow_the_stored_value() {
         assert!(Settings::default().auto_check_updates);
         let off: HashMap<&str, bool> = [(KEY_AUTO_CHECK_UPDATES, false)].into();
-        let s = Settings::from_lookup(|k| off.get(k).copied(), |_| None);
+        let s = Settings::from_lookup(|k| off.get(k).copied(), |_| None, |_| None);
         assert!(!s.auto_check_updates);
     }
 
     #[test]
+    fn icon_style_defaults_to_the_logo_and_follows_the_stored_value() {
+        let s = Settings::default();
+        assert_eq!(s.icon_style, IconStyle::Ice);
+        assert!(s.tint_custom_icon);
+        let strings: HashMap<&str, String> = [(KEY_ICON_STYLE, "eye".to_string())].into();
+        let bools: HashMap<&str, bool> = [(KEY_TINT_CUSTOM_ICON, false)].into();
+        let s = Settings::from_lookup(
+            |k| bools.get(k).copied(),
+            |_| None,
+            |k| strings.get(k).cloned(),
+        );
+        assert_eq!(s.icon_style, IconStyle::Eye);
+        assert!(!s.tint_custom_icon);
+    }
+
+    #[test]
+    fn unknown_icon_style_uses_the_logo() {
+        for bad in ["", "Eye", "rocket"] {
+            let s = Settings::from_lookup(|_| None, |_| None, |_| Some(bad.to_string()));
+            assert_eq!(s.icon_style, IconStyle::Ice, "value {bad:?}");
+        }
+    }
+
+    #[test]
     fn missing_keys_use_defaults() {
-        let s = Settings::from_lookup(|_| None, |_| None);
+        let s = Settings::from_lookup(|_| None, |_| None, |_| None);
         assert_eq!(s, Settings::default());
     }
 
     #[test]
     fn invalid_interval_uses_default() {
         for bad in [-1.0, f64::NAN, f64::INFINITY, MAX_REHIDE_SECONDS + 1.0] {
-            let s = Settings::from_lookup(|_| None, |_| Some(bad));
+            let s = Settings::from_lookup(|_| None, |_| Some(bad), |_| None);
             assert_eq!(s.rehide_interval, Duration::from_secs(15), "value {bad}");
         }
-        let s = Settings::from_lookup(|_| None, |_| Some(0.0));
+        let s = Settings::from_lookup(|_| None, |_| Some(0.0), |_| None);
         assert_eq!(s.rehide_interval, Duration::ZERO);
     }
 

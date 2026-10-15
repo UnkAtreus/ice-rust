@@ -72,7 +72,8 @@ on: macOS 26.3 on Apple Silicon, with four displays.
 The logic lives in pure modules with unit tests and no macOS dependencies:
 `model`, `geometry`, `chain`, `sections`, `arrange`, `bar_layout`,
 `bar_scroll`, `rehide`, `input_tag`, `worker`, `image_check`, `brand` (the
-embedded artwork), and the defaults half of `settings`. The macOS glue is under `src/platform/` and
+embedded artwork), `menu_icon` (the icon styles), and the defaults half of
+`settings`. The macOS glue is under `src/platform/` and
 compiles only on macOS. The binary (`src/main.rs`) parses the command line
 and dispatches to the menu bar app, `probe` or `render-settings`.
 
@@ -122,6 +123,44 @@ The source artwork's stray specks and edge haze are not copied: the script
 rebuilds the squircle on Apple's macOS icon grid (824 px body on a 1024 px
 canvas) over a gradient sampled from the source.
 
+### Icon styles (v1.4)
+
+The Menu bar icon popup on the General page picks the icon's look. Each
+style has one image while items are hidden and one while a section is
+revealed or the Ice Bar is open:
+
+| Style | Items hidden | Items shown |
+|---|---|---|
+| ice-rust Logo (default) | `menubar-template.png` | `menubar-template-active.png` |
+| Dot | `circlebadge` | `circlebadge.fill` |
+| Ellipsis | `ellipsis.circle` | `ellipsis.circle.fill` |
+| Chevron | `chevron.left` | `chevron.right` |
+| Arrow | `arrow.left.circle` | `arrow.right.circle.fill` |
+| Eye | `eye.slash` | `eye` |
+| Door | `door.left.hand.closed` | `door.left.hand.open` |
+| Sunglasses | `sunglasses.fill` | `sunglasses` |
+| Snowflake | `snowflake.circle` | `snowflake.circle.fill` |
+| Grid | `square.grid.2x2` | `square.grid.2x2.fill` |
+| Star | `star` | `star.fill` |
+| Custom Image | the chosen image | the same image |
+
+The symbols are SF Symbols at their default size, the same size as the
+divider chevrons, drawn as template images. The two images of each pair
+have the same width, so the items left of the icon do not move when the
+state changes. A style whose symbols the system lacks, or Custom Image with
+no image stored, shows the logo.
+
+Choose Image... (or picking Custom Image before any image is stored) opens
+an open panel limited to image files. ice-rust opens the file with
+`NSImage`, so PNG, JPEG, HEIC, TIFF, PDF and SVG all work, draws it into an
+RGBA bitmap that fits 24 x 18 pt at 3x, and stores that PNG in defaults, so
+moving or deleting the original file later changes nothing. Match menu bar
+color draws the image as a template image in the menu bar's text color. It
+starts on when part of the image is clear and what is drawn is black, white
+or gray, and off for a photo or a colored logo, which keep their colors. A
+file that cannot be opened leaves the icon as it was and shows the reason
+under Custom image.
+
 ## Permissions
 
 | Permission | Needed for | API |
@@ -163,8 +202,10 @@ the page title sits in the title bar area. The window is resizable down to
 820 x 600 pt; the sidebar keeps its width while the pages and the layout
 bars stretch.
 
-- General: Use Ice Bar, Automatically rehide, and Rehide after (5 to 60 s).
-  Changes are saved and applied at once.
+- General: Menu bar icon and Custom image (v1.4, see
+  [Icon styles](#icon-styles-v14)), Use Ice Bar, Automatically rehide, Rehide
+  after (5 to 60 s), Launch at login and Automatically check for updates
+  (v1.3). Changes are saved and applied at once.
 - Menu Bar Layout: "Drag to arrange your menu bar items", a tip about
   Command-dragging in the menu bar, and three bars (Visible, Hidden,
   Always-Hidden Section) filled with the sampled menu bar color, or light or
@@ -390,6 +431,9 @@ Stored in the process's standard user defaults:
 | `RehideInterval` | 15 | Idle seconds before hiding (0 to 3600 stored; the Settings window offers 5 to 60) |
 | `AlwaysHiddenPlacementV2` | absent | Set once the v1.2 always-hidden placement migration has run (see below) |
 | `AutomaticallyCheckForUpdates` | true | Daily update checks (v1.3) |
+| `IconStyle` | `ice` | Icon style (v1.4): `ice`, `dot`, `ellipsis`, `chevron`, `arrow`, `eye`, `door`, `sunglasses`, `snowflake`, `grid`, `star` or `custom`; an unknown value means `ice` |
+| `TintCustomIcon` | true | Draw the custom image in the menu bar's text color |
+| `CustomIconImage` | absent | The custom image as PNG data, fitted to 24 x 18 pt at 3x |
 | `LastUpdateCheck` | absent | Seconds since 1970 of the last successful update check |
 | `SkippedUpdateVersion` | absent | Version that "Skip This Version" set; automatic checks do not offer it |
 | `LastLaunchedVersion` | absent | Version of the last launch; a change with a missing permission shows the re-grant notice once |
