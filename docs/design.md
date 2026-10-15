@@ -1038,5 +1038,8 @@ display has the menu bar". Other timeouts keep the old message. Nothing is
 refused up front, since the estimate could be off by a divider. The layout
 page now wraps its message line, up to three lines.
 
+Confirmed by the maintainer: the same moves fail with the menu bar on the
+built-in display and work normally once a large display has it.
+
 Not done: moving off-screen items without showing them, which Ice does
 through a private event relay.
