@@ -8,6 +8,24 @@ ice-rust is a menu bar manager for macOS, written in Rust. It hides menu bar
 items behind dividers and shows them on demand, in the menu bar itself or in
 a panel below it.
 
+## Highlights
+
+- **Works on macOS 27.** macOS 27 draws every menu bar item in one system
+  process, and Ice no longer hides items there. ice-rust 0.2.0 and later
+  hide items on macOS 27, with Menu Bar Layout, show on click, hover and
+  scroll, and hotkeys working. See
+  [Known limitations](#known-limitations-and-open-issues) for what differs.
+- **Less memory than Ice.** Measured on one Mac (macOS 26.3): ice-rust used
+  62 MB in a single process after 2.5 hours of everyday use, while Ice used
+  78 MB plus 7.4 MB for its helper process less than 2 minutes after launch.
+  ice-rust keeps no image cache, so its memory does not grow over time; Ice
+  users have reported its image cache reaching gigabytes. See
+  [Performance](#performance).
+- **No freeze on a stuck capture.** Window captures run on a worker thread
+  with a 1 s limit, so a capture stuck in the window server shows
+  placeholder images instead of freezing the app, a freeze Ice users
+  reported on macOS 26.1 ([Ice #777](https://github.com/jordanbaird/Ice/issues/777)).
+
 ## A Rust port of Ice
 
 ice-rust is a Rust port of [Ice](https://github.com/jordanbaird/Ice), the
@@ -35,7 +53,9 @@ it (see [Differences from Ice](#differences-from-ice)).
 
 - **Hide and show with a divider.** A divider status item sits left of the
   ice-rust icon. Hiding stretches it until every item to its left leaves the
-  screen; a click on the icon brings them back.
+  screen; a click on the icon brings them back. On macOS 27 the divider and
+  a spacer next to it grow until macOS folds the hidden items into its own
+  overflow control.
 - **Always-Hidden section.** A second divider at the far left of the menu bar
   holds items you rarely need. It starts empty; drag items into it from Menu
   Bar Layout or with a Command-drag. Option-click the icon to show them (this
@@ -53,11 +73,14 @@ it (see [Differences from Ice](#differences-from-ice)).
   or scroll down over it, to show the hidden items; scroll up to hide them.
   Show on hover (off by default) shows them while the pointer rests on an
   empty part of the menu bar and hides them again when it leaves.
+- **Global hotkeys.** Set shortcuts on the Hotkeys page to toggle the
+  hidden section, the always-hidden section or the Ice Bar from any app.
+  None is set by default, and they need no permission.
 - **Settings window.** A General page (icon, launch at login, updates), a
   Hidden Items page (Ice Bar, show on click, hover and scroll, rehide), a
   Menu Bar Layout page where you drag items between the Visible, Hidden and
-  Always-Hidden bars to move the real items, a Permissions page and an About
-  page.
+  Always-Hidden bars to move the real items, a Hotkeys page, a Permissions
+  page and an About page.
 - **Auto-rehide.** A revealed section hides again after an idle interval
   (15 s by default, 5 to 60 s in Settings) while the pointer is outside the
   menu bar and no menu or panel is open.
