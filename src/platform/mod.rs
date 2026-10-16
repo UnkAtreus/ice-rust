@@ -4,6 +4,8 @@ pub mod app;
 pub mod brand;
 pub mod capture;
 pub mod events;
+pub mod hotkeys;
+pub mod hotkeys_pane;
 pub mod ice_bar;
 pub mod installer;
 pub mod layout_pane;

@@ -62,10 +62,12 @@ use crate::settings::{self, KEY_CUSTOM_ICON_IMAGE, Settings};
 mod agent;
 mod agent_layout;
 mod app_menus;
+mod hotkeys;
 mod triggers;
 use agent::Agent;
 use agent_layout::AgentArrange;
 use app_menus::AppMenus;
+use hotkeys::HotkeyState;
 use triggers::Triggers;
 
 /// Ignore a reopen request this soon after a click outside closed the bar,
@@ -235,6 +237,13 @@ impl SettingsHost for Host {
         layout_pane::load_order(&c.names, &c.control_frames())
     }
 
+    fn refused_hotkeys(&self) -> Vec<crate::hotkeys::HotkeyAction> {
+        self.0
+            .upgrade()
+            .map(|c| c.refused_hotkeys())
+            .unwrap_or_default()
+    }
+
     fn request_move(&self, request: MoveRequest, done: MoveCallback) {
         match self.0.upgrade() {
             Some(c) if c.agent_menu_bar => c.agent_request_move(request, done),
@@ -290,6 +299,8 @@ struct Controller {
     agent: Agent,
     /// Menu Bar Layout on macOS 27.
     agent_arrange: AgentArrange,
+    /// Global hotkeys (v1.9).
+    hotkeys: HotkeyState,
     settle_timer: RefCell<Option<Retained<NSTimer>>>,
     tick_timer: RefCell<Option<Retained<NSTimer>>>,
     observers: RefCell<Vec<Observer>>,
@@ -461,6 +472,7 @@ impl Controller {
                 agent_menu_bar,
                 agent: Agent::default(),
                 agent_arrange: AgentArrange::default(),
+                hotkeys: HotkeyState::default(),
                 settle_timer: RefCell::new(None),
                 tick_timer: RefCell::new(None),
                 observers: RefCell::new(Vec::new()),
@@ -496,6 +508,7 @@ impl Controller {
         self.observe_termination();
         self.observe_app_activation();
         self.install_triggers();
+        self.install_hotkeys();
 
         // Keeps the About page's update status current while it is open.
         let me = self.me.clone();
@@ -707,6 +720,9 @@ impl Controller {
             != (next.hide_app_menus, next.use_ice_bar)
         {
             self.schedule_app_menu_check();
+        }
+        if previous.hotkeys != next.hotkeys {
+            self.register_hotkeys(&next.hotkeys);
         }
     }
 

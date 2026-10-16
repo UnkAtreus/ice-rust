@@ -257,6 +257,9 @@ bars stretch.
   next press. The pane also refreshes when it opens and every 3 s while it
   is visible and idle, skipping one refresh after a capture timed out; an
   image that timed out keeps the one from the previous refresh.
+- Hotkeys (v1.9): one row per action (toggle the hidden section, the
+  always-hidden section, Use Ice Bar) with a field that records a shortcut
+  and a button that clears it. See [Hotkeys](#hotkeys-v19).
 - Permissions: the state of Screen Recording and Accessibility, refreshed
   every second. Accessibility changes show within a second; a Screen
   Recording grant applies after ice-rust relaunches, as the page says. The
@@ -264,6 +267,38 @@ bars stretch.
   matching System Settings pane.
 - About: version, what the app does, and the note that it is a Rust port of
   Ice, not affiliated with or endorsed by Ice.
+
+## Hotkeys (v1.9)
+
+Like Ice's (evidence section 6): Carbon `RegisterEventHotKey` on
+`GetEventDispatcherTarget()` with the signature `'IcRs'` and the action as
+id, and one `InstallEventHandler` for hotkey presses, installed with the
+first hotkey (`platform::hotkeys`). Carbon hotkeys need no permission. The
+handler runs the action on the next pass of the run loop: the hidden
+section toggles like a click on the icon, the always-hidden section like an
+Option-click, and Use Ice Bar flips like its switch (ignored on macOS 27,
+with a log line). None is assigned by default.
+
+The hotkeys are stored under the defaults key `Hotkeys` as a JSON string,
+`{"ToggleHiddenSection": [keyCode, modifiers]}`, with Ice's action names
+and modifier bits (control 1, option 2, shift 4, command 8). All hotkeys
+are unregistered while one of our menus tracks (Ice does the same) and
+while the Hotkeys page records; the two reasons are kept apart, and the
+hotkeys come back when neither holds.
+
+Recording (`platform::hotkeys_pane`): a click on a field starts it, a local
+key-down monitor takes the next key and swallows it. Escape cancels, Delete
+clears, a modifier key alone is ignored, and anything else goes through
+`hotkeys::check_combo`: a modifier other than Shift, not Option or
+Option-Shift alone from macOS 15 on (Carbon no longer delivers those), not
+another action's combination, and not an enabled system shortcut from
+`CopySymbolicHotKeys`. Enabled system shortcuts such as Command-Space never
+reach the page, because macOS acts on them first. A combination that
+`RegisterEventHotKey` refuses, for example one another app registered, is
+reported under the rows. Changing pages, closing the window or the window
+losing key status ends a recording. Fields show the modifier symbols and
+the key's name in the current keyboard layout (`UCKeyTranslate`), or a
+fixed name for keys that type no character.
 
 ## Moving items
 
@@ -410,7 +445,7 @@ left edge, in the same order.
 ## Render a Settings page
 
 ```
-ice-rust render-settings --page <general|hidden-items|layout|permissions|about> --out <png>
+ice-rust render-settings --page <general|hidden-items|layout|hotkeys|permissions|about> --out <png>
                          [--width W --height H] [--divider-prefix <prefix>]
                          [--default-settings]
 ```

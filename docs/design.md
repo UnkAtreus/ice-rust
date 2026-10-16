@@ -1189,3 +1189,42 @@ included.
 
 Not tested yet: a notched display, several displays, a real Mac on macOS
 27.
+
+## v1.9: global hotkeys (roadmap, 2026-10-17)
+
+The first item of the ice-rust roadmap. Ice's design, from the evidence
+document (section 6): Carbon `RegisterEventHotKey`, no hotkey by default,
+the actions ToggleHiddenSection, ToggleAlwaysHiddenSection, EnableIceBar,
+SearchMenuBarItems and ToggleApplicationMenus, stored as
+`[keyCode, modifiers]` with control 1, option 2, shift 4, command 8, a
+recorder that refuses combinations without a modifier, with Shift alone or
+taken by the system, and hotkeys off while a menu tracks.
+
+| Decision | Why |
+|---|---|
+| The two section actions and EnableIceBar | The roadmap item; ice-rust has no search panel, and ToggleApplicationMenus can follow. |
+| Carbon, not an event tap or a global key monitor | Needs no permission (Input Monitoring or Accessibility), like Ice. |
+| Option and Option-Shift alone refused from macOS 15 on | Carbon no longer delivers such hotkeys from macOS 15, so they would record and never fire. |
+| One JSON string under `Hotkeys` | The same shape as Ice's entries in one value; our defaults domain is separate from Ice's. |
+| Hotkeys off while recording, apart from the menu-tracking pause | A recorded combination must reach the recorder, not run its action; either reason alone keeps them off. |
+| EnableIceBar disabled on macOS 27 | There is no Ice Bar there yet. |
+
+Live test in the macOS 27.0.1 VM (2026-10-17, maintainer approved,
+synthetic input inside the VM only):
+
+- ToggleHiddenSection stored as Control-Option-H: "1 hotkey(s) registered,
+  0 refused"; pressing it showed the hidden section and pressing it again
+  hid it, both with the modifier keys pressed as keys and with the flags
+  alone. The first tries did nothing because the VM's screen was locked.
+- The Hotkeys page recorded Control-Command-K for the always-hidden
+  section ("2 hotkey(s) registered"); the field showed ⌃⌘K, and pressing it
+  showed the always-hidden section at once.
+- Option-J was refused with "macOS does not pass on Option-only shortcuts;
+  add Command or Control"; Escape kept ⌃⌘K; Delete cleared it and the
+  stored value lost the entry.
+- Command-Space never reached the page: Spotlight opened. Enabled system
+  shortcuts are taken by macOS first, so the system check only guards.
+- The Use Ice Bar row shows "Not available on macOS 27 yet" and is
+  disabled.
+
+Not tested yet: hotkeys on macOS 26 and on a real Mac.

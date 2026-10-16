@@ -24,6 +24,7 @@ use objc2_foundation::{NSArray, NSDictionary, NSObject, NSRect, NSSize, NSString
 use objc2_uniform_type_identifiers::UTType;
 
 use super::brand;
+use super::hotkeys_pane::HotkeysPane;
 use super::layout_pane::{LayoutCanvas, LayoutSnapshot};
 use super::login_item;
 use super::menu_icon::{self, CustomIcon};
@@ -38,6 +39,7 @@ use super::ui::{
 use crate::arrange::{
     BarModel, DropOutcome, apply_drop, contains_all, drop_destination, orders_agree, same_order,
 };
+use crate::hotkeys::HotkeyAction;
 use crate::login_item as login;
 use crate::menu_icon::IconStyle;
 use crate::model::{LAYOUT_REFRESH, PERMISSIONS_REFRESH, WindowId};
@@ -50,7 +52,7 @@ pub const DEFAULT_SIZE: (f64, f64) = (820.0, 600.0);
 const SIDEBAR_WIDTH: f64 = 216.0;
 /// Height of the title bar area that holds the page title.
 const HEADER_HEIGHT: f64 = 44.0;
-const MARGIN: f64 = 24.0;
+pub(super) const MARGIN: f64 = 24.0;
 /// After the last move, the order is read this often until two reads in a
 /// row agree (v1.7): showing and hiding the sections moves the status
 /// item windows asynchronously, and a read in the middle shows bars that
@@ -82,6 +84,8 @@ pub trait SettingsHost {
     /// dividers cannot be found.
     fn load_layout_order(&self) -> Option<BarModel>;
     fn request_move(&self, request: MoveRequest, done: MoveCallback);
+    /// Actions whose hotkey macOS refused at the last registration (v1.9).
+    fn refused_hotkeys(&self) -> Vec<HotkeyAction>;
     /// The window is closing.
     fn closed(&self);
     /// "Check for Updates..." on the About page.
@@ -95,15 +99,17 @@ pub enum Page {
     General,
     HiddenItems,
     Layout,
+    Hotkeys,
     Permissions,
     About,
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [
+    pub const ALL: [Page; 6] = [
         Page::General,
         Page::HiddenItems,
         Page::Layout,
+        Page::Hotkeys,
         Page::Permissions,
         Page::About,
     ];
@@ -113,6 +119,7 @@ impl Page {
             Page::General => "General",
             Page::HiddenItems => "Hidden Items",
             Page::Layout => "Menu Bar Layout",
+            Page::Hotkeys => "Hotkeys",
             Page::Permissions => "Permissions",
             Page::About => "About",
         }
@@ -123,6 +130,7 @@ impl Page {
             Page::General => "gearshape",
             Page::HiddenItems => "eye",
             Page::Layout => "menubar.rectangle",
+            Page::Hotkeys => "keyboard",
             Page::Permissions => "lock.shield",
             Page::About => "info.circle",
         }
@@ -134,6 +142,7 @@ impl Page {
             "general" => Some(Page::General),
             "hidden-items" => Some(Page::HiddenItems),
             "layout" => Some(Page::Layout),
+            "hotkeys" => Some(Page::Hotkeys),
             "permissions" => Some(Page::Permissions),
             "about" => Some(Page::About),
             _ => None,
@@ -307,6 +316,7 @@ pub struct SettingsWindow {
     canvas: Retained<LayoutCanvas>,
     spinner: Retained<NSProgressIndicator>,
     permission_rows: Vec<(Permission, PermissionRow)>,
+    hotkeys: Rc<HotkeysPane>,
     about_status: Retained<NSTextField>,
     /// Targets of the controls; controls do not retain their targets.
     _targets: Vec<Retained<ActionTarget>>,
@@ -326,10 +336,10 @@ pub struct SettingsWindow {
 }
 
 /// Subtitle of a setting that the macOS 27 menu bar does not support yet.
-const NOT_ON_MACOS_27: &str = "Not available on macOS 27 yet";
+pub(super) const NOT_ON_MACOS_27: &str = "Not available on macOS 27 yet";
 
 /// Whether MenuBarAgent draws the menu bar (macOS 27, v1.8).
-fn agent_menu_bar() -> bool {
+pub(super) fn agent_menu_bar() -> bool {
     crate::agent_bar::uses_agent_menu_bar(status::os_major())
 }
 
@@ -477,6 +487,10 @@ impl SettingsWindow {
             let layout_view = FlippedView::new(mtm, page_frame);
             let (canvas, spinner) = build_layout(mtm, &layout_view, page_width, me);
 
+            // Hotkeys.
+            let hotkeys_view = FlippedView::new(mtm, page_frame);
+            let hotkeys = HotkeysPane::build(mtm, &hotkeys_view, page_width, host.clone());
+
             // Permissions.
             let permissions_view = FlippedView::new(mtm, page_frame);
             let permission_rows =
@@ -490,6 +504,7 @@ impl SettingsWindow {
                 (Page::General, general_view),
                 (Page::HiddenItems, hidden_view),
                 (Page::Layout, layout_view),
+                (Page::Hotkeys, hotkeys_view),
                 (Page::Permissions, permissions_view),
                 (Page::About, about_view),
             ];
@@ -513,6 +528,10 @@ impl SettingsWindow {
                         for (_, row) in &w.rows {
                             row.set_emphasized(key);
                         }
+                        // A recording ends when the window stops taking keys.
+                        if !key {
+                            w.hotkeys.stop_recording();
+                        }
                     }
                 },
             );
@@ -532,6 +551,7 @@ impl SettingsWindow {
                 canvas,
                 spinner,
                 permission_rows,
+                hotkeys,
                 about_status,
                 _targets: targets,
                 refresh: RefCell::new(None),
@@ -553,6 +573,7 @@ impl SettingsWindow {
 
     /// Shows `page` and refreshes it.
     pub fn select(&self, page: Page) {
+        self.hotkeys.stop_recording();
         self.current.set(page);
         for (p, row) in &self.rows {
             row.set_selected(*p == page);
@@ -567,6 +588,7 @@ impl SettingsWindow {
             Page::Layout => {}
             Page::Permissions => self.refresh_permissions(),
             Page::General | Page::HiddenItems => self.sync_general(),
+            Page::Hotkeys => self.hotkeys.sync(),
             Page::About => self.refresh_update_status(),
         }
     }
@@ -627,6 +649,7 @@ impl SettingsWindow {
     }
 
     fn will_close(&self) {
+        self.hotkeys.stop_recording();
         if let Some(timer) = self.refresh.borrow_mut().take() {
             timer.invalidate();
         }
@@ -1210,7 +1233,7 @@ impl SettingsWindow {
 }
 
 /// A row title and a secondary line under it.
-fn row_text(
+pub(super) fn row_text(
     mtm: MainThreadMarker,
     parent: &NSView,
     title: &str,
@@ -1245,7 +1268,7 @@ fn row_text(
     );
 }
 
-fn separator(mtm: MainThreadMarker, parent: &NSView, y: f64, width: f64) {
+pub(super) fn separator(mtm: MainThreadMarker, parent: &NSView, y: f64, width: f64) {
     let line = RoundedBox::new(mtm, rect(16.0, y, width - 32.0, 1.0), BoxStyle::Separator);
     add(parent, &line, Follow::Width);
 }

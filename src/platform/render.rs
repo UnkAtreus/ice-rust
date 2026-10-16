@@ -96,6 +96,10 @@ impl SettingsHost for RenderHost {
         )));
     }
 
+    fn refused_hotkeys(&self) -> Vec<crate::hotkeys::HotkeyAction> {
+        Vec::new()
+    }
+
     fn closed(&self) {}
 
     fn check_for_updates(&self) {}

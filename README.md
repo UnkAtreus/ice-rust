@@ -114,14 +114,14 @@ of this repository.
 
 ### Hotkeys
 
-ice-rust has no global hotkeys yet. Its actions are available from the icon
-and its menu.
+Set on the Hotkeys page in Settings, like Ice: none by default, and they
+need no permission.
 
 | Feature | Ice | ice-rust | Notes |
 |---|---|---|---|
-| Toggle individual menu bar sections | Yes | No | Click or Option-click the icon. |
+| Toggle individual menu bar sections | Yes | Yes | The hidden and the always-hidden section. |
 | Show the search panel | Yes | No | No search panel. |
-| Enable/disable the Ice Bar | Yes | No | "Use Ice Bar" in the icon menu and on the General page. |
+| Enable/disable the Ice Bar | Yes | Yes | Switches "Use Ice Bar"; not on macOS 27, which has no Ice Bar yet. |
 | Show/hide section divider icons | Yes | No | |
 | Toggle application menus | Yes | No | |
 | Enable/disable auto rehide | Roadmap | No | "Automatically rehide" on the General page. |
@@ -153,7 +153,6 @@ and its menu.
 
 Planned, in rough priority order. Nothing here is implemented yet.
 
-- [ ] Global hotkeys for the sections and the Ice Bar
 - [ ] Smart and focused-app rehide strategies
 - [ ] Horizontal scrolling in the Ice Bar instead of the "+N" tile
 - [ ] Search menu bar items
@@ -260,7 +259,8 @@ return.
 | Swipe or scroll over the menu bar | Down or right shows the hidden items, up or left hides them, once per gesture (Show on scroll, on by default). |
 | Rest the pointer on an empty part of the menu bar | Shows the hidden items after the hover delay (Show on hover, off by default); they hide again once the pointer leaves the menu bar and the Ice Bar, unless you clicked in the menu bar meanwhile. |
 | Click an image in the Ice Bar | Closes the bar, reveals the item's section, waits up to 1 s for the item to reach the screen, and clicks it. |
-| Settings... (Command-comma while the menu is open) | Opens the Settings window: General, Hidden Items, Menu Bar Layout, Permissions, About. |
+| Settings... (Command-comma while the menu is open) | Opens the Settings window: General, Hidden Items, Menu Bar Layout, Hotkeys, Permissions, About. |
+| A hotkey you set on the Hotkeys page | Works in any app: toggles the hidden section (like a click on the icon), the always-hidden section (like an Option-click), or Use Ice Bar. None is set by default. A shortcut needs Command or Control; macOS 15 and later do not pass on shortcuts with only Option or Option-Shift. |
 | Check for Updates... | Checks GitHub now, even with automatic checks off, and offers a newer version or says ice-rust is up to date. Also on the About page. |
 | Arrange Menu Bar Items... | Opens Settings on the Menu Bar Layout page. Drag a tile to a new place in any bar; ice-rust moves the real item and rebuilds the bars from the menu bar. |
 | Command-drag in the menu bar | Rearranges items with macOS's own drag. Keep the ice-rust icon right of both dividers; ice-rust refuses to hide while a divider sits right of the icon. |
@@ -526,7 +526,7 @@ Two subcommands check behavior without touching the menu bar:
 cargo run --release -- probe [--divider Ice.ControlItem.Hidden] [--out <dir>] [--json]
 
 # Draws a Settings page into a PNG without showing a window.
-cargo run --release -- render-settings --page <general|hidden-items|layout|permissions|about> --out page.png
+cargo run --release -- render-settings --page <general|hidden-items|layout|hotkeys|permissions|about> --out page.png
 ```
 
 `probe` posts no events, creates no status items and writes no defaults.

@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use crate::hotkeys::Hotkeys;
 use crate::menu_icon::IconStyle;
 use crate::model::REHIDE_INTERVAL;
 use crate::triggers::{HOVER_DELAY, MAX_HOVER_DELAY};
@@ -19,6 +20,8 @@ pub const KEY_SHOW_ON_HOVER_DELAY: &str = "ShowOnHoverDelay";
 pub const KEY_SHOW_ON_SCROLL: &str = "ShowOnScroll";
 /// Ice's key for hiding the app menus when shown items reach them (v1.6).
 pub const KEY_HIDE_APP_MENUS: &str = "HideApplicationMenus";
+/// Global hotkeys as JSON, `{action: [keyCode, modifiers]}` (v1.9).
+pub const KEY_HOTKEYS: &str = "Hotkeys";
 pub const KEY_TINT_CUSTOM_ICON: &str = "TintCustomIcon";
 /// The custom icon as PNG data at 3x (v1.4). Not part of `Settings`: it is
 /// written once when the user chooses an image.
@@ -94,6 +97,8 @@ pub struct Settings {
     pub show_on_scroll: bool,
     /// Hide the frontmost app's menus while shown items reach them (v1.6).
     pub hide_app_menus: bool,
+    /// Global hotkeys; none by default, like Ice (v1.9).
+    pub hotkeys: Hotkeys,
 }
 
 impl Default for Settings {
@@ -111,6 +116,7 @@ impl Default for Settings {
             hover_delay: HOVER_DELAY,
             show_on_scroll: true,
             hide_app_menus: true,
+            hotkeys: Hotkeys::default(),
         }
     }
 }
@@ -146,6 +152,9 @@ impl Settings {
                 .unwrap_or(defaults.hover_delay),
             show_on_scroll: get_bool(KEY_SHOW_ON_SCROLL).unwrap_or(defaults.show_on_scroll),
             hide_app_menus: get_bool(KEY_HIDE_APP_MENUS).unwrap_or(defaults.hide_app_menus),
+            hotkeys: get_string(KEY_HOTKEYS)
+                .map(|text| Hotkeys::decode(&text))
+                .unwrap_or(defaults.hotkeys),
         }
     }
 }
@@ -252,7 +261,7 @@ mod store {
     use objc2_foundation::{NSData, NSNumber, NSString, NSUserDefaults};
 
     use super::{
-        KEY_AUTO_CHECK_UPDATES, KEY_AUTO_REHIDE, KEY_HIDE_APP_MENUS, KEY_ICON_STYLE,
+        KEY_AUTO_CHECK_UPDATES, KEY_AUTO_REHIDE, KEY_HIDE_APP_MENUS, KEY_HOTKEYS, KEY_ICON_STYLE,
         KEY_REHIDE_INTERVAL, KEY_SHOW_ON_CLICK, KEY_SHOW_ON_HOVER, KEY_SHOW_ON_HOVER_DELAY,
         KEY_SHOW_ON_SCROLL, KEY_TINT_CUSTOM_ICON, KEY_USE_ICE_BAR, SeedValue, Settings,
     };
@@ -305,6 +314,7 @@ mod store {
             settings.hover_delay.as_secs_f64(),
             &NSString::from_str(KEY_SHOW_ON_HOVER_DELAY),
         );
+        write_string(KEY_HOTKEYS, &settings.hotkeys.encode());
     }
 
     pub fn key_exists(key: &str) -> bool {
@@ -485,6 +495,22 @@ mod tests {
             let s = Settings::from_lookup(|_| None, |_| None, |_| Some(bad.to_string()));
             assert_eq!(s.icon_style, IconStyle::Ice, "value {bad:?}");
         }
+    }
+
+    #[test]
+    fn hotkeys_load_from_their_key() {
+        use crate::hotkeys::HotkeyAction;
+        let s = Settings::from_lookup(
+            |_| None,
+            |_| None,
+            |k| (k == KEY_HOTKEYS).then(|| r#"{"ToggleHiddenSection":[4,3]}"#.to_string()),
+        );
+        let combo = s.hotkeys.get(HotkeyAction::ToggleHiddenSection).unwrap();
+        assert_eq!(combo.key_code, 4);
+        assert!(combo.modifiers.control && combo.modifiers.option);
+        assert_eq!(s.hotkeys.get(HotkeyAction::EnableIceBar), None);
+        // None by default, like Ice.
+        assert_eq!(Settings::default().hotkeys.assigned().count(), 0);
     }
 
     #[test]

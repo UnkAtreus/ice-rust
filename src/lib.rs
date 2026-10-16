@@ -10,6 +10,7 @@ pub mod base64;
 pub mod brand;
 pub mod chain;
 pub mod geometry;
+pub mod hotkeys;
 pub mod image_check;
 pub mod input_tag;
 pub mod login_item;
