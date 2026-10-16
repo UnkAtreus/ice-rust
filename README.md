@@ -21,10 +21,10 @@ a panel below it.
   ice-rust keeps no image cache, so its memory does not grow over time; Ice
   users have reported its image cache reaching gigabytes. See
   [Performance](#performance).
-- **No freeze on a stuck capture.** Window captures run on a worker thread
-  with a 1 s limit, so a capture stuck in the window server shows
-  placeholder images instead of freezing the app, a freeze Ice users
-  reported on macOS 26.1 ([Ice #777](https://github.com/jordanbaird/Ice/issues/777)).
+- **Lightweight.** IceRust.app takes 3.6 MB on disk, against 8.2 MB for
+  Ice 0.11.13-dev.2. Part of the difference is that ice-rust is built for
+  Apple Silicon only, while Ice also runs on Intel Macs and bundles the
+  Sparkle updater (2.6 MB).
 
 ## A Rust port of Ice
 
