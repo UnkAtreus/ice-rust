@@ -21,8 +21,6 @@ a panel below it.
   ice-rust keeps no image cache, so its memory does not grow over time; Ice
   users have reported its image cache reaching gigabytes. See
   [Performance](#performance).
-- **Lightweight.** A smaller app than Ice, running as one process with no
-  helper.
 
 ## A Rust port of Ice
 
