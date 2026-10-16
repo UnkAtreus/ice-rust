@@ -1227,4 +1227,6 @@ synthetic input inside the VM only):
 - The Use Ice Bar row shows "Not available on macOS 27 yet" and is
   disabled.
 
-Not tested yet: hotkeys on macOS 26 and on a real Mac.
+Hand test on macOS 26 (2026-10-17, maintainer, dist build): recording,
+using the hotkeys from another app, the Use Ice Bar hotkey, the refusal
+message and clearing all passed.
