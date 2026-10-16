@@ -21,10 +21,8 @@ a panel below it.
   ice-rust keeps no image cache, so its memory does not grow over time; Ice
   users have reported its image cache reaching gigabytes. See
   [Performance](#performance).
-- **Lightweight.** IceRust.app takes 3.6 MB on disk, against 8.2 MB for
-  Ice 0.11.13-dev.2. Part of the difference is that ice-rust is built for
-  Apple Silicon only, while Ice also runs on Intel Macs and bundles the
-  Sparkle updater (2.6 MB).
+- **Lightweight.** A smaller app than Ice, running as one process with no
+  helper.
 
 ## A Rust port of Ice
 
