@@ -5,7 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::{Rc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -29,12 +29,15 @@ use super::login_item;
 use super::menu_icon::{self, CustomIcon};
 use super::mover::{MoveCallback, MoveError, MoveRequest};
 use super::permissions;
+use super::status;
 use super::timer;
 use super::ui::{
     ActionTarget, BoxStyle, FlippedView, Follow, RoundedBox, Weight, WindowDelegate, add, follow,
     label, rect, symbol, symbol_view, wrapping_label,
 };
-use crate::arrange::{DropOutcome, drop_destination, model_matches};
+use crate::arrange::{
+    BarModel, DropOutcome, apply_drop, contains_all, drop_destination, orders_agree, same_order,
+};
 use crate::login_item as login;
 use crate::menu_icon::IconStyle;
 use crate::model::{LAYOUT_REFRESH, PERMISSIONS_REFRESH, WindowId};
@@ -48,9 +51,16 @@ const SIDEBAR_WIDTH: f64 = 216.0;
 /// Height of the title bar area that holds the page title.
 const HEADER_HEIGHT: f64 = 44.0;
 const MARGIN: f64 = 24.0;
-/// Pause before re-reading the menu bar after a move, so the sections have
-/// settled back.
-const SETTLE_AFTER_MOVE: Duration = Duration::from_millis(300);
+/// After the last move, the order is read this often until two reads in a
+/// row agree (v1.7): showing and hiding the sections moves the status
+/// item windows asynchronously, and a read in the middle shows bars that
+/// are half empty.
+const SETTLE_POLL: Duration = Duration::from_millis(150);
+/// Longest wait for the menu bar to settle after the last move.
+const SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the periodic refresh waits to confirm a read that lacks items
+/// the bars show, before showing it.
+const CONFIRM_MISSING: Duration = Duration::from_secs(1);
 
 /// The Custom image row's note while nothing went wrong.
 const CUSTOM_NOTE: &str = "Used by Custom Image";
@@ -68,6 +78,9 @@ pub trait SettingsHost {
     /// Stores a chosen custom icon image and switches the icon to it.
     fn set_custom_icon(&self, icon: &CustomIcon);
     fn load_layout(&self) -> LayoutSnapshot;
+    /// Only the order of the bars, without images; `None` when the
+    /// dividers cannot be found.
+    fn load_layout_order(&self) -> Option<BarModel>;
     fn request_move(&self, request: MoveRequest, done: MoveCallback);
     /// The window is closing.
     fn closed(&self);
@@ -302,6 +315,27 @@ pub struct SettingsWindow {
     /// The last layout refresh timed out, so the next periodic one is
     /// skipped to let the stuck capture finish.
     skip_refresh: Cell<bool>,
+    /// Moves requested from the layout page and not finished yet (v1.7).
+    moves_pending: Cell<usize>,
+    /// The first failure among the moves since the bars last settled.
+    move_error: RefCell<Option<String>>,
+    /// The bars as the user dropped them, shown while the moves run.
+    expected: RefCell<Option<BarModel>>,
+    /// Polls the order until the menu bar settles after the last move.
+    settle: RefCell<Option<Retained<NSTimer>>>,
+}
+
+/// Subtitle of a setting that the macOS 27 menu bar does not support yet.
+const NOT_ON_MACOS_27: &str = "Not available on macOS 27 yet";
+
+/// Whether MenuBarAgent draws the menu bar (macOS 27, v1.8).
+fn agent_menu_bar() -> bool {
+    crate::agent_bar::uses_agent_menu_bar(status::os_major())
+}
+
+/// Hide app menus works with Use Ice Bar off, and not on macOS 27 yet.
+fn app_menus_switch_enabled(use_ice_bar: bool) -> bool {
+    !use_ice_bar && !agent_menu_bar()
 }
 
 fn switch_state(on: bool) -> isize {
@@ -503,6 +537,10 @@ impl SettingsWindow {
                 refresh: RefCell::new(None),
                 ticks: Cell::new(0),
                 skip_refresh: Cell::new(false),
+                moves_pending: Cell::new(0),
+                move_error: RefCell::new(None),
+                expected: RefCell::new(None),
+                settle: RefCell::new(None),
             }
         });
         this.select(Page::General);
@@ -581,7 +619,7 @@ impl SettingsWindow {
                     if self.skip_refresh.replace(false) {
                         return;
                     }
-                    self.reload_layout();
+                    self.refresh_layout();
                 }
             }
             _ => {}
@@ -608,7 +646,10 @@ impl SettingsWindow {
 
     fn sync_general(&self) {
         let s = self.host.settings();
-        self.general.use_bar.setState(switch_state(s.use_ice_bar));
+        let agent = agent_menu_bar();
+        self.general
+            .use_bar
+            .setState(switch_state(s.use_ice_bar && !agent));
         self.general
             .auto_rehide
             .setState(switch_state(s.auto_rehide));
@@ -620,8 +661,10 @@ impl SettingsWindow {
         self.general.interval.setEnabled(s.auto_rehide);
         self.general
             .hide_app_menus
-            .setState(switch_state(s.hide_app_menus));
-        self.general.hide_app_menus.setEnabled(!s.use_ice_bar);
+            .setState(switch_state(s.hide_app_menus && !agent));
+        self.general
+            .hide_app_menus
+            .setEnabled(app_menus_switch_enabled(s.use_ice_bar));
         self.general
             .show_on_click
             .setState(switch_state(s.show_on_click));
@@ -801,9 +844,15 @@ impl SettingsWindow {
     /// hover delay slider covers every accepted value.
     fn general_changed(&self, slider_moved: bool) {
         let mut s = self.host.settings();
-        s.use_ice_bar = self.general.use_bar.state() == NSControlStateValueOn;
-        s.hide_app_menus = self.general.hide_app_menus.state() == NSControlStateValueOn;
-        self.general.hide_app_menus.setEnabled(!s.use_ice_bar);
+        // On macOS 27 both switches show off and stay disabled; the stored
+        // choices apply again on an earlier macOS.
+        if !agent_menu_bar() {
+            s.use_ice_bar = self.general.use_bar.state() == NSControlStateValueOn;
+            s.hide_app_menus = self.general.hide_app_menus.state() == NSControlStateValueOn;
+        }
+        self.general
+            .hide_app_menus
+            .setEnabled(app_menus_switch_enabled(s.use_ice_bar));
         s.show_on_click = self.general.show_on_click.state() == NSControlStateValueOn;
         s.show_on_hover = self.general.show_on_hover.state() == NSControlStateValueOn;
         s.show_on_scroll = self.general.show_on_scroll.state() == NSControlStateValueOn;
@@ -903,6 +952,43 @@ impl SettingsWindow {
         self.show_snapshot(snapshot);
     }
 
+    /// The periodic refresh. An order that differs from the bars shown is
+    /// read again a moment later and shown only if it holds, so a section
+    /// caught while it shows or hides never flashes empty (v1.7).
+    fn refresh_layout(&self) {
+        let Some(read) = self.host.load_layout_order() else {
+            // No dividers: the full reload shows why.
+            self.reload_layout();
+            return;
+        };
+        let shown = self.canvas.with_snapshot(|s| s.model.clone());
+        if shown.as_ref().is_some_and(|shown| same_order(shown, &read)) {
+            self.reload_layout();
+            return;
+        }
+        // Items missing from the read are often still on their way after
+        // the sections showed or hid, so that read must hold for longer.
+        let missing = shown.is_some_and(|shown| !contains_all(&read, &shown));
+        let confirm = if missing {
+            CONFIRM_MISSING
+        } else {
+            SETTLE_POLL
+        };
+        let me = self.me.clone();
+        timer::after(self.mtm, confirm, move || {
+            let Some(w) = me.upgrade() else {
+                return;
+            };
+            if !w.canvas.is_idle() || w.moves_pending.get() > 0 {
+                return;
+            }
+            let again = w.host.load_layout_order();
+            if again.is_some_and(|again| same_order(&again, &read)) {
+                w.reload_layout();
+            }
+        });
+    }
+
     /// Shows a fresh snapshot. Images that timed out keep the earlier ones
     /// for the same windows. Only the note changes; a message from the last
     /// drop stays.
@@ -929,21 +1015,34 @@ impl SettingsWindow {
         }
     }
 
+    /// A tile was dropped. The bars show the new order at once and the
+    /// real item moves in the background; further drops queue behind it,
+    /// like Ice's layout editor (v1.7).
     fn dropped(&self, item: WindowId, section: Section, index: usize) {
         let decision = self.canvas.with_snapshot(|s| {
             s.model.as_ref().map(|m| {
                 (
                     drop_destination(m, item, section, index),
                     m.find(item).map(|(from, _)| from),
+                    apply_drop(m, item, section, index),
                 )
             })
         });
         match decision {
-            None | Some((Ok(DropOutcome::NoChange), _)) => {}
-            Some((Err(err), _)) => self.canvas.set_message(Some(err.to_string()), true),
-            Some((Ok(DropOutcome::Move(destination)), Some(from))) => {
+            None | Some((Ok(DropOutcome::NoChange), _, _)) => {}
+            Some((Err(err), _, _)) => self.canvas.set_message(Some(err.to_string()), true),
+            Some((Ok(DropOutcome::Move(destination)), Some(from), Some(next))) => {
+                if let Some(settle) = self.settle.borrow_mut().take() {
+                    settle.invalidate();
+                }
+                if self.moves_pending.get() == 0 {
+                    self.move_error.borrow_mut().take();
+                }
+                self.moves_pending.set(self.moves_pending.get() + 1);
+                self.canvas.show_model(next.clone());
+                *self.expected.borrow_mut() = Some(next);
+                self.canvas.set_message(None, false);
                 self.set_busy(true);
-                self.canvas.set_message(Some("Moving...".into()), false);
                 let request = MoveRequest {
                     item,
                     destination,
@@ -954,38 +1053,120 @@ impl SettingsWindow {
                     request,
                     Box::new(move |result| {
                         if let Some(w) = me.upgrade() {
-                            w.move_finished(request, result);
+                            w.move_finished(result);
                         }
                     }),
                 );
             }
-            Some((Ok(DropOutcome::Move(_)), None)) => {}
+            Some(_) => {}
         }
     }
 
-    fn move_finished(&self, request: MoveRequest, result: Result<(), MoveError>) {
+    fn move_finished(&self, result: Result<(), MoveError>) {
+        let left = self.moves_pending.get().saturating_sub(1);
+        self.moves_pending.set(left);
+        if let Err(err) = result {
+            self.move_error
+                .borrow_mut()
+                .get_or_insert_with(|| format!("Move failed: {err}"));
+        }
+        if left == 0 {
+            self.settle_after_moves();
+        }
+    }
+
+    /// Reads the order every `SETTLE_POLL` until two reads in a row agree
+    /// or `SETTLE_TIMEOUT` passes, then shows the real bars once.
+    fn settle_after_moves(&self) {
+        if let Some(old) = self.settle.borrow_mut().take() {
+            old.invalidate();
+        }
+        let started = Instant::now();
+        let last: RefCell<Option<BarModel>> = RefCell::new(None);
+        let reads = Cell::new(0u32);
         let me = self.me.clone();
-        timer::after(self.mtm, SETTLE_AFTER_MOVE, move || {
+        let timer = timer::schedule(self.mtm, SETTLE_POLL, true, move |timer| {
             let Some(w) = me.upgrade() else {
+                timer.invalidate();
                 return;
             };
-            let snapshot = w.host.load_layout();
-            let matches = snapshot
-                .model
-                .as_ref()
-                .is_some_and(|m| model_matches(m, request.item, request.destination));
-            w.show_snapshot(snapshot);
-            w.set_busy(false);
-            let message = match (&result, matches) {
-                (Ok(()), true) => None,
-                (Ok(()), false) => {
-                    Some("The menu bar order does not match the requested order".to_string())
-                }
-                (Err(err), _) => Some(format!("Move failed: {err}")),
-            };
-            let error = message.is_some();
-            w.canvas.set_message(message, error);
+            // A newer drop restarts settling when it finishes.
+            if w.moves_pending.get() > 0 {
+                timer.invalidate();
+                return;
+            }
+            let read = w.host.load_layout_order();
+            reads.set(reads.get() + 1);
+            let stable = matches!(
+                (&read, &*last.borrow()),
+                (Some(a), Some(b)) if same_order(a, b)
+            );
+            // Two equal reads can both miss items still on their way, so a
+            // settled read also has every item the bars show.
+            let complete = read.as_ref().is_some_and(|read| {
+                w.expected
+                    .borrow()
+                    .as_ref()
+                    .is_none_or(|expected| contains_all(read, expected))
+            });
+            *last.borrow_mut() = read;
+            let timed_out = started.elapsed() >= SETTLE_TIMEOUT;
+            let settled = stable && complete;
+            if !settled && !timed_out {
+                return;
+            }
+            timer.invalidate();
+            w.settle.borrow_mut().take();
+            eprintln!(
+                "ice-rust: layout {} after {} reads ({} ms)",
+                match (settled, complete) {
+                    (true, _) => "settled",
+                    (false, true) => "still changing, shown as read",
+                    (false, false) => "incomplete, kept as dropped",
+                },
+                reads.get(),
+                started.elapsed().as_millis(),
+            );
+            if complete {
+                w.finish_moves();
+            } else {
+                w.keep_dropped();
+            }
         });
+        *self.settle.borrow_mut() = Some(timer);
+    }
+
+    /// The menu bar did not settle in time with every item: the bars keep
+    /// the order as dropped, which the mover verified move by move, and
+    /// the periodic refresh catches up once the menu bar has settled.
+    fn keep_dropped(&self) {
+        self.expected.borrow_mut().take();
+        self.set_busy(false);
+        let message = self.move_error.borrow_mut().take();
+        let error = message.is_some();
+        self.canvas.set_message(message, error);
+    }
+
+    /// Shows the settled menu bar and says whether it ended up as dropped.
+    fn finish_moves(&self) {
+        let snapshot = self.host.load_layout();
+        let expected = self.expected.borrow_mut().take();
+        let agrees = match (&snapshot.model, &expected) {
+            (Some(actual), Some(expected)) => orders_agree(actual, expected),
+            _ => false,
+        };
+        self.show_snapshot(snapshot);
+        self.set_busy(false);
+        let message = match self.move_error.borrow_mut().take() {
+            Some(err) => Some(err),
+            None if !agrees => Some(
+                "The menu bar did not end up in the order you dropped; the bars show it as it is"
+                    .to_string(),
+            ),
+            None => None,
+        };
+        let error = message.is_some();
+        self.canvas.set_message(message, error);
     }
 
     /// Draws the window content, title bar included, into a PNG without
@@ -1198,7 +1379,9 @@ fn build_general(
         settings.auto_check_updates,
     );
 
-    // Hidden Items: how hidden items show (v1.5, v1.6).
+    // Hidden Items: how hidden items show (v1.5, v1.6). Neither the Ice
+    // Bar nor hiding app menus works on the macOS 27 menu bar yet (v1.8).
+    let agent = agent_menu_bar();
     let show = RoundedBox::new(mtm, rect(MARGIN, 8.0, width, 6.0 * ROW), BoxStyle::Group);
     add(hidden_page, &show, Follow::Width);
     let use_bar = switch_row(
@@ -1206,25 +1389,34 @@ fn build_general(
         &show,
         (
             "Use Ice Bar",
-            "Show hidden items in a bar below the menu bar",
+            if agent {
+                NOT_ON_MACOS_27
+            } else {
+                "Show hidden items in a bar below the menu bar"
+            },
         ),
         0.0,
         width,
-        settings.use_ice_bar,
+        settings.use_ice_bar && !agent,
     );
+    use_bar.setEnabled(!agent);
     separator(mtm, &show, ROW, width);
     let hide_app_menus = switch_row(
         mtm,
         &show,
         (
             "Hide app menus",
-            "Hide the app's menus while shown items need the room (Use Ice Bar off)",
+            if agent {
+                NOT_ON_MACOS_27
+            } else {
+                "Hide the app's menus while shown items need the room (Use Ice Bar off)"
+            },
         ),
         ROW,
         width,
-        settings.hide_app_menus,
+        settings.hide_app_menus && !agent,
     );
-    hide_app_menus.setEnabled(!settings.use_ice_bar);
+    hide_app_menus.setEnabled(app_menus_switch_enabled(settings.use_ice_bar));
     separator(mtm, &show, 2.0 * ROW, width);
     let show_on_click = switch_row(
         mtm,

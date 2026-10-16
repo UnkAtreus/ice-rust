@@ -8,6 +8,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use ice_rust::agent_bar::{AgentSlot, is_folded};
 use ice_rust::model::{DIVIDER_AUTOSAVE, ICON_AUTOSAVE, Rect, WindowRecord};
 use ice_rust::worker::BoundedError;
 
@@ -212,6 +213,20 @@ struct Report {
     /// Set when the bounded capture did not finish (G5).
     capture_error: Option<String>,
     out_dir: Option<PathBuf>,
+    /// macOS 27: MenuBarAgent's slots, left to right; `None` before macOS
+    /// 27 or without an answer (v1.8).
+    agent_slots: Option<Vec<AgentSlot>>,
+}
+
+impl Report {
+    /// The system overflow control's frame, when MenuBarAgent shows one.
+    fn overflow_control(&self) -> Option<&Rect> {
+        self.agent_slots
+            .as_ref()?
+            .iter()
+            .find(|s| s.overflow_control)
+            .map(|s| &s.frame)
+    }
 }
 
 /// Capture row error when the window server returned no image.
@@ -314,6 +329,25 @@ impl Report {
             )
         });
         let out_dir = self.out_dir.as_ref().map(|p| p.display().to_string());
+        let overflow = self.overflow_control();
+        let agent_slots = self.agent_slots.as_ref().map_or_else(
+            || "null".into(),
+            |slots| {
+                json_list(slots, |s| {
+                    format!(
+                        "{{\"x\":{},\"y\":{},\"width\":{},\"height\":{},\"pid\":{},\"name\":{},\"overflow_control\":{},\"folded\":{}}}",
+                        json_num(s.frame.x),
+                        json_num(s.frame.y),
+                        json_num(s.frame.width),
+                        json_num(s.frame.height),
+                        s.pid.map_or_else(|| "null".into(), |p| p.to_string()),
+                        json_opt_str(s.name.as_deref()),
+                        s.overflow_control,
+                        !s.overflow_control && is_folded(&s.frame, overflow)
+                    )
+                })
+            },
+        );
         format!(
             concat!(
                 "{{\"permissions\":{{\"screen_recording\":{},\"post_events\":{},\"accessibility\":{}}},",
@@ -322,7 +356,7 @@ impl Report {
                 "\"divider_title\":{},\"icon_title\":{},\"divider\":{},\"divider_error\":{},\"icon\":{},",
                 "\"always_hidden_title\":{},\"always_hidden_divider\":{},",
                 "\"hidden\":{},\"always_hidden\":{},\"visible\":{},\"captures\":{},",
-                "\"capture_error\":{},\"out_dir\":{}}}"
+                "\"capture_error\":{},\"out_dir\":{},\"agent_slots\":{}}}"
             ),
             self.screen_recording,
             self.post_events,
@@ -353,6 +387,7 @@ impl Report {
             captures,
             json_opt_str(self.capture_error.as_deref()),
             json_opt_str(out_dir.as_deref()),
+            agent_slots,
         )
     }
 
@@ -506,6 +541,29 @@ impl Report {
                 format!(" ({})", transparent.join(", "))
             }
         );
+        if let Some(slots) = &self.agent_slots {
+            let overflow = self.overflow_control();
+            let _ = writeln!(s, "MenuBarAgent slots (macOS 27)  {}", slots.len());
+            for slot in slots {
+                let kind = if slot.overflow_control {
+                    "overflow control"
+                } else if is_folded(&slot.frame, overflow) {
+                    "folded"
+                } else {
+                    "on the bar"
+                };
+                let _ = writeln!(
+                    s,
+                    "  x {:>7} y {:>6} w {:>6}  pid {:<6} {:<16} {}",
+                    slot.frame.x,
+                    slot.frame.y,
+                    slot.frame.width,
+                    slot.pid.map_or_else(|| "-".into(), |p| p.to_string()),
+                    kind,
+                    slot.name.as_deref().unwrap_or("-")
+                );
+            }
+        }
         s
     }
 }
@@ -524,6 +582,68 @@ mod probe {
         CAPTURE_FAILED, CAPTURE_TIMED_OUT, CaptureRow, ProbeOptions, Report,
         always_hidden_title_for, capture_error_text, icon_title_for,
     };
+
+    /// macOS 27: every slot on the bar cropped from MenuBarAgent's menu bar
+    /// window, from the Window Server "Menubar" window and from the screen,
+    /// as `agent-<index>-<source>.png`, to see which source draws the items.
+    fn write_agent_captures(
+        slots: &[ice_rust::agent_bar::AgentSlot],
+        all: &[ice_rust::model::WindowRecord],
+        displays: &[geometry::Display],
+        dir: &std::path::Path,
+    ) {
+        use ice_rust::platform::capture::{SlotSource, capture_slots, is_transparent};
+        let overflow = slots.iter().find(|s| s.overflow_control).map(|s| s.frame);
+        for display in displays {
+            let d = display.bounds;
+            let on_display = |r: &ice_rust::model::Rect| {
+                r.min_x() >= d.min_x() && r.max_x() <= d.max_x() && (r.y - d.y).abs() <= 1.0
+            };
+            let Some(agent) = all.iter().find(|w| {
+                w.owner_name.as_deref() == Some(ice_rust::model::MENU_BAR_AGENT_OWNER)
+                    && on_display(&w.bounds)
+            }) else {
+                continue;
+            };
+            let region = agent.bounds;
+            let rects: Vec<_> = slots
+                .iter()
+                .filter(|s| {
+                    !s.overflow_control
+                        && on_display(&s.frame)
+                        && !ice_rust::agent_bar::is_folded(&s.frame, overflow.as_ref())
+                })
+                .map(|s| s.frame)
+                .collect();
+            let mut sources = vec![("agent", SlotSource::Window(agent.id))];
+            if let Some(menubar) = geometry::menu_bar_window(all, &d) {
+                sources.push(("menubar", SlotSource::Window(menubar.id)));
+            }
+            sources.push(("screen", SlotSource::Screen));
+            for (label, source) in sources {
+                let images = capture_slots(source, &region, &rects);
+                let mut written = 0;
+                let mut clear = 0;
+                for (index, image) in images.iter().enumerate() {
+                    let Some(image) = image else {
+                        continue;
+                    };
+                    if is_transparent(image) {
+                        clear += 1;
+                    }
+                    let name = format!("agent-{index:02}-{label}.png");
+                    if capture::write_png(image, &dir.join(name)).is_ok() {
+                        written += 1;
+                    }
+                }
+                eprintln!(
+                    "agent captures from {label} ({}): {written} of {} written, {clear} transparent",
+                    source.label(),
+                    rects.len()
+                );
+            }
+        }
+    }
 
     /// Read-only: window list queries, captures, and file writes into
     /// `--out` only.
@@ -546,6 +666,18 @@ mod probe {
         report.primary_height = windows::primary_height();
         report.displays = displays.iter().map(|d| (d.id, d.bounds)).collect();
         report.status_windows = all.iter().filter(|w| w.layer == STATUS_LAYER).count();
+        if ice_rust::agent_bar::uses_agent_menu_bar(ice_rust::platform::status::os_major()) {
+            report.agent_slots =
+                ice_rust::platform::menu_bar_space::agent_dump().map(|mut slots| {
+                    slots.sort_by(|a, b| a.frame.x.total_cmp(&b.frame.x));
+                    slots
+                });
+            if let (Some(slots), Some(dir)) = (&report.agent_slots, &options.out)
+                && fs::create_dir_all(dir).is_ok()
+            {
+                write_agent_captures(slots, &all, &displays, dir);
+            }
+        }
 
         report.icon = chain::find_titled(&all, &report.icon_title).cloned();
         let divider = match chain::find_divider(&all, &report.divider_title, &report.icon_title) {
@@ -557,6 +689,11 @@ mod probe {
             DividerLookup::TitlesUnreadable => {
                 report.divider_error =
                     Some("window titles are unreadable; Screen Recording is missing".into());
+                None
+            }
+            DividerLookup::NoItemWindows => {
+                report.divider_error =
+                    Some("no status item windows; the menu bar draws items without windows".into());
                 None
             }
         };
@@ -1040,7 +1177,7 @@ mod tests {
         assert!(json.contains("\"hidden\":[{\"id\":312,\"title\":\"Item-0\",\"x\":-498,\"y\":0,\"width\":32,\"height\":30,\"onscreen\":false}]"));
         assert!(json.contains("\"file\":\"00-312.png\""));
         assert!(json.contains("\"divider\":null"));
-        assert!(json.ends_with("\"out_dir\":null}"));
+        assert!(json.ends_with("\"out_dir\":null,\"agent_slots\":null}"));
         assert!(
             json.contains("\"menu_bar_height\":30,\"menu_bar_height_source\":\"Menubar window\"")
         );
@@ -1048,6 +1185,44 @@ mod tests {
         assert!(text.contains("hidden chain (1, left to right)"));
         assert!(text.contains("summary  1 hidden, 0 always-hidden, 0 visible, 0 transparent"));
         assert!(json.contains("\"always_hidden\":[]"));
+
+        // macOS 27: MenuBarAgent's slots, folded ones left of the overflow
+        // control (VM evidence).
+        let agent = Report {
+            agent_slots: Some(vec![
+                AgentSlot {
+                    frame: Rect::new(401.0, 0.0, 44.0, 30.0),
+                    pid: Some(1235),
+                    name: Some("D15".into()),
+                    identifier: None,
+                    overflow_control: false,
+                },
+                AgentSlot {
+                    frame: Rect::new(428.0, 1.0, 18.0, 27.0),
+                    pid: Some(419),
+                    name: Some("Show Hidden Menu Bar Items".into()),
+                    identifier: None,
+                    overflow_control: true,
+                },
+                AgentSlot {
+                    frame: Rect::new(453.0, 0.0, 38.0, 30.0),
+                    pid: Some(1235),
+                    name: Some("D8".into()),
+                    identifier: None,
+                    overflow_control: false,
+                },
+            ]),
+            ..Report::default()
+        };
+        let json = agent.to_json();
+        assert!(json.contains(
+            "{\"x\":401,\"y\":0,\"width\":44,\"height\":30,\"pid\":1235,\"name\":\"D15\",\"overflow_control\":false,\"folded\":true}"
+        ));
+        assert!(json.contains("\"name\":\"D8\",\"overflow_control\":false,\"folded\":false}"));
+        let text = agent.to_text();
+        assert!(text.contains("MenuBarAgent slots (macOS 27)  3"));
+        assert!(text.contains("folded           D15"));
+        assert!(text.contains("overflow control Show Hidden Menu Bar Items"));
         assert!(json.contains("\"capture_error\":null"));
     }
 

@@ -180,8 +180,11 @@ at the left end.
 ## Requirements
 
 - macOS 14 or later (the app bundle's minimum). ice-rust has been tested
-  only on macOS 26.3 on Apple Silicon. Intel Macs and macOS 14 and 15 are
-  untested.
+  on macOS 26.3 on Apple Silicon, and on macOS 27.0.1 in a virtual machine.
+  Intel Macs and macOS 14 and 15 are untested.
+- On macOS 27, hiding, showing and Menu Bar Layout work; the Ice Bar and
+  Hide app menus are not available yet (see
+  [Known limitations](#known-limitations-and-open-issues)).
 - Rust 1.88 or later. The crate uses edition 2024 and let chains, which
   stabilized in 1.88, and declares `rust-version = "1.88"`; clippy's
   `incompatible_msrv` check passes against it. It is built and tested with
@@ -430,6 +433,26 @@ What these numbers do not cover:
 
 - **Tested on one machine.** All live tests ran on macOS 26.3, Apple Silicon,
   with four displays and Ice quit.
+- **macOS 27.** macOS 27 draws all status items in one system process, with
+  no item windows, and drops an item as wide as half the display. ice-rust
+  hides items there by growing a divider and a spacer next to it below
+  that limit, so macOS folds the hidden items into its own overflow control
+  ([docs/macos27.md](docs/macos27.md), issue #2). Each divider has a
+  spacer next to it (a 16 pt gap while shown), and ice-rust drags a spacer
+  back next to its divider if macOS moves it. The Ice Bar and Hide app
+  menus are not available on macOS 27 yet. Menu Bar Layout shows every
+  section in the menu bar while it is open, until Settings closes, because
+  macOS 27 gives folded items no position to read or drag; items that
+  still do not fit are left out of the page. With displays of different
+  widths, the leftmost items of a section can stay visible on the wider
+  ones. If the hidden divider sits right of the icon after an update (it
+  did with 0.1.6 on macOS 27), ice-rust keeps everything shown and asks
+  you to Command-drag the icon right of the dividers once. If
+  IceRust is switched off under Allow in the Menu Bar (System Settings >
+  Menu Bar), macOS shows none of its items; ice-rust then says so at launch.
+  Item images in Menu Bar Layout come from a screen capture, so macOS may
+  show its screen capture indicator for a moment. Tested in a macOS 27.0.1
+  virtual machine only.
 - **Deprecated capture API.** `CGWindowListCreateImageFromArray` is
   deprecated, and its Swift initializer is obsoleted in the macOS 15 SDK. The
   C function still works on macOS 26.3. A comment in Ice's source says

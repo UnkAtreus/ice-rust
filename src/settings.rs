@@ -37,6 +37,16 @@ pub const UI_REHIDE_MAX_SECONDS: f64 = 60.0;
 /// stay in the hidden section.
 pub const SEED_POSITIONS: [Option<f64>; 3] = [Some(0.0), Some(1.0), None];
 
+/// The seeds for macOS `os_major`: MenuBarAgent reads the same keys with
+/// different meaning from macOS 27 on (`agent_bar::AGENT_SEED_POSITIONS`).
+pub fn seed_positions(os_major: u32) -> [Option<f64>; 3] {
+    if crate::agent_bar::uses_agent_menu_bar(os_major) {
+        crate::agent_bar::AGENT_SEED_POSITIONS
+    } else {
+        SEED_POSITIONS
+    }
+}
+
 /// Defaults flag written once the v1.2 always-hidden placement migration
 /// has run (L1).
 pub const KEY_ALWAYS_HIDDEN_PLACEMENT: &str = "AlwaysHiddenPlacementV2";
@@ -210,8 +220,8 @@ pub fn positions_out_of_order(icon: Option<f64>, hidden: Option<f64>, always: Op
 /// have once seeding is done: the stored value, or the seed for a missing
 /// key (`seed_plan` writes only missing keys). The always-hidden divider
 /// has no seed, so a missing value stays missing.
-pub fn positions_after_seed(stored: [Option<f64>; 3]) -> [Option<f64>; 3] {
-    let mut out = SEED_POSITIONS;
+pub fn positions_after_seed(stored: [Option<f64>; 3], seeds: [Option<f64>; 3]) -> [Option<f64>; 3] {
+    let mut out = seeds;
     for (slot, value) in out.iter_mut().zip(stored) {
         if value.is_some() {
             *slot = value;
@@ -225,8 +235,8 @@ pub fn positions_after_seed(stored: [Option<f64>; 3]) -> [Option<f64>; 3] {
 /// stored values alone would miss a fresh seed next to grown values, such
 /// as a seeded icon at 0 beside a stored hidden divider. A missing
 /// always-hidden position is accepted.
-pub fn needs_reseed(stored: [Option<f64>; 3]) -> bool {
-    let [icon, hidden, always] = positions_after_seed(stored);
+pub fn needs_reseed(stored: [Option<f64>; 3], seeds: [Option<f64>; 3]) -> bool {
+    let [icon, hidden, always] = positions_after_seed(stored, seeds);
     positions_out_of_order(icon, hidden, always)
 }
 
@@ -633,13 +643,14 @@ mod tests {
 
     #[test]
     fn seeds_fill_missing_positions() {
-        assert_eq!(positions_after_seed([None, None, None]), SEED_POSITIONS);
+        let seeds = SEED_POSITIONS;
+        assert_eq!(positions_after_seed([None, None, None], seeds), seeds);
         assert_eq!(
-            positions_after_seed([Some(415.0), Some(496.0), None]),
+            positions_after_seed([Some(415.0), Some(496.0), None], seeds),
             [Some(415.0), Some(496.0), None]
         );
         assert_eq!(
-            positions_after_seed([None, Some(7.0), Some(9.0)]),
+            positions_after_seed([None, Some(7.0), Some(9.0)], seeds),
             [Some(0.0), Some(7.0), Some(9.0)]
         );
     }
@@ -648,19 +659,49 @@ mod tests {
     fn reseed_checks_the_order_after_seeding() {
         // A missing always-hidden position is accepted (L1): AppKit places
         // that divider.
-        assert!(!needs_reseed([Some(415.0), Some(496.0), None]));
-        assert!(!needs_reseed([Some(0.0), Some(1.0), None]));
-        assert!(!needs_reseed([None, Some(496.0), None]));
+        assert!(!needs_reseed(
+            [Some(415.0), Some(496.0), None],
+            SEED_POSITIONS
+        ));
+        assert!(!needs_reseed([Some(0.0), Some(1.0), None], SEED_POSITIONS));
+        assert!(!needs_reseed([None, Some(496.0), None], SEED_POSITIONS));
         // Fresh install.
-        assert!(!needs_reseed([None, None, None]));
+        assert!(!needs_reseed([None, None, None], SEED_POSITIONS));
         // Grown values in order, as AppKit wrote them for v1.1 on quit.
-        assert!(!needs_reseed([Some(259.0), Some(373.0), Some(537.0)]));
-        assert!(!needs_reseed([Some(415.0), Some(496.0), Some(5649.0)]));
+        assert!(!needs_reseed(
+            [Some(259.0), Some(373.0), Some(537.0)],
+            SEED_POSITIONS
+        ));
+        assert!(!needs_reseed(
+            [Some(415.0), Some(496.0), Some(5649.0)],
+            SEED_POSITIONS
+        ));
         // Stored values that are wrong on their own.
-        assert!(needs_reseed([Some(600.0), Some(496.0), Some(5649.0)]));
-        assert!(needs_reseed([Some(0.0), Some(9.0), Some(5.0)]));
+        assert!(needs_reseed(
+            [Some(600.0), Some(496.0), Some(5649.0)],
+            SEED_POSITIONS
+        ));
+        assert!(needs_reseed(
+            [Some(0.0), Some(9.0), Some(5.0)],
+            SEED_POSITIONS
+        ));
         // A stored always-hidden value right of a seeded hidden divider.
-        assert!(needs_reseed([None, None, Some(0.5)]));
+        assert!(needs_reseed([None, None, Some(0.5)], SEED_POSITIONS));
+    }
+
+    #[test]
+    fn macos_27_seeds_keep_the_order() {
+        assert_eq!(seed_positions(26), SEED_POSITIONS);
+        let seeds = seed_positions(27);
+        assert_eq!(seeds, crate::agent_bar::AGENT_SEED_POSITIONS);
+        // Fresh install, and an install that ran an earlier version on
+        // macOS 27 with the macOS 26 seeds still stored.
+        assert!(!needs_reseed([None, None, None], seeds));
+        assert!(!needs_reseed([Some(0.0), Some(1.0), None], seeds));
+        assert_eq!(
+            positions_after_seed([None, None, None], seeds),
+            [Some(1.0), Some(2.0), None]
+        );
     }
 
     #[test]

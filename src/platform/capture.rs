@@ -15,12 +15,12 @@ use std::time::{Duration, Instant};
 use objc2::AnyThread;
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
 use objc2_core_foundation::{CFArray, CFIndex, CFRetained, CGPoint, CGRect, CGSize};
-#[allow(deprecated)]
-use objc2_core_graphics::CGWindowListCreateImageFromArray;
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
-    CGImageByteOrderInfo, CGRectNull, CGWindowImageOption,
+    CGImageByteOrderInfo, CGRectNull, CGWindowImageOption, CGWindowListOption,
 };
+#[allow(deprecated)]
+use objc2_core_graphics::{CGWindowListCreateImage, CGWindowListCreateImageFromArray};
 use objc2_foundation::NSDictionary;
 
 use super::windows::rect_to_cg;
@@ -141,6 +141,87 @@ fn capture_windows_in(
 /// Blocks; see `capture_items_bounded`.
 pub fn capture_windows(ids: &[WindowId]) -> Option<CFRetained<CGImage>> {
     capture_windows_in(None, ids, CAPTURE_OPTION)
+}
+
+/// Where a macOS 27 item image is cropped from (v1.8): there are no item
+/// windows, only the one menu bar window MenuBarAgent draws into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotSource {
+    /// A window by id, such as MenuBarAgent's menu bar window.
+    Window(WindowId),
+    /// Whatever the screen shows there.
+    Screen,
+}
+
+impl SlotSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            SlotSource::Window(_) => "window",
+            SlotSource::Screen => "screen",
+        }
+    }
+}
+
+/// Captures `region` (CG space) once from `source` and crops every rect of
+/// `slots` (CG space) from it. `None` for a slot the capture does not
+/// cover. Blocks like every capture.
+pub fn capture_slots(
+    source: SlotSource,
+    region: &Rect,
+    slots: &[Rect],
+) -> Vec<Option<CFRetained<CGImage>>> {
+    let image = match source {
+        SlotSource::Window(id) => capture_windows_in(Some(region), &[id], CAPTURE_OPTION),
+        // Deprecated like the array call (M7), and still working.
+        #[allow(deprecated)]
+        SlotSource::Screen => CGWindowListCreateImage(
+            rect_to_cg(region),
+            CGWindowListOption::OptionOnScreenOnly,
+            0,
+            CGWindowImageOption(CAPTURE_OPTION),
+        ),
+    };
+    let Some(image) = image else {
+        return slots.iter().map(|_| None).collect();
+    };
+    let Some(scale) = composite_scale(
+        CGImage::width(Some(&image)),
+        CGImage::height(Some(&image)),
+        region,
+    ) else {
+        return slots.iter().map(|_| None).collect();
+    };
+    slots
+        .iter()
+        .map(|slot| crop(&image, &crop_rect(slot, region, scale)))
+        .collect()
+}
+
+/// `capture_slots` from each of `sources` in turn on the worker thread,
+/// bounded by `CAPTURE_TIMEOUT`: every rect keeps the first crop that is
+/// not fully transparent.
+pub fn capture_slots_bounded(
+    sources: Vec<SlotSource>,
+    region: Rect,
+    rects: Vec<Rect>,
+) -> Result<Vec<Option<CFRetained<CGImage>>>, BoundedError> {
+    run_bounded(&CAPTURE_GATE, CAPTURE_TIMEOUT, move || {
+        let mut out: Vec<Option<CFRetained<CGImage>>> = rects.iter().map(|_| None).collect();
+        for source in sources {
+            if out.iter().all(Option::is_some) {
+                break;
+            }
+            let images = capture_slots(source, &region, &rects);
+            for (slot, image) in out.iter_mut().zip(images) {
+                if slot.is_none()
+                    && let Some(image) = image.filter(|i| !is_transparent(i))
+                {
+                    *slot = Some(image);
+                }
+            }
+        }
+        out
+    })
 }
 
 /// Crops a sub-rectangle given in image pixels (origin top left).

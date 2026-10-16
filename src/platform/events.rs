@@ -23,8 +23,9 @@ use objc2_core_foundation::{
     kCFRunLoopCommonModes,
 };
 use objc2_core_graphics::{
-    CGDirectDisplayID, CGDisplayHideCursor, CGDisplayShowCursor, CGEvent, CGEventField,
-    CGEventFlags, CGEventMask, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
+    CGAssociateMouseAndMouseCursorPosition, CGDirectDisplayID, CGDisplayHideCursor,
+    CGDisplayShowCursor, CGEvent, CGEventField, CGEventFilterMask, CGEventFlags, CGEventMask,
+    CGEventSource, CGEventSourceStateID, CGEventSuppressionState, CGEventTapLocation,
     CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGEventType, CGMainDisplayID,
     CGMouseButton, CGWarpMouseCursorPosition,
 };
@@ -88,6 +89,7 @@ impl std::error::Error for InputError {}
 struct CursorHold {
     saved: Option<CGPoint>,
     display: CGDirectDisplayID,
+    since: Instant,
 }
 
 impl CursorHold {
@@ -95,7 +97,11 @@ impl CursorHold {
         let saved = pointer_location().map(|(x, y)| CGPoint::new(x, y));
         let display = CGMainDisplayID();
         let _ = CGDisplayHideCursor(display);
-        Self { saved, display }
+        Self {
+            saved,
+            display,
+            since: Instant::now(),
+        }
     }
 }
 
@@ -103,8 +109,17 @@ impl Drop for CursorHold {
     fn drop(&mut self) {
         if let Some(saved) = self.saved {
             let _ = CGWarpMouseCursorPosition(saved);
+            // A warp leaves the hardware mouse ignored for a moment; telling
+            // the window server that mouse and cursor move together again
+            // ends that at once, so the pointer follows the hand right
+            // after a move (v1.7).
+            let _ = CGAssociateMouseAndMouseCursorPosition(true);
         }
         let _ = CGDisplayShowCursor(self.display);
+        eprintln!(
+            "ice-rust: pointer hidden for {} ms",
+            self.since.elapsed().as_millis()
+        );
     }
 }
 
@@ -481,8 +496,57 @@ pub fn is_posting() -> bool {
     ACTIVE.with(|active| active.try_borrow().map_or(true, |a| a.is_some()))
 }
 
+/// Leaves the user's own mouse, keyboard and system events live while
+/// `source`'s events are posted, with no suppression interval after them.
+fn permit_local_input(source: &CGEventSource) {
+    let permit = CGEventFilterMask::PermitLocalMouseEvents
+        | CGEventFilterMask::PermitLocalKeyboardEvents
+        | CGEventFilterMask::PermitSystemDefinedEvents;
+    for state in [
+        CGEventSuppressionState::EventSuppressionStateSuppressionInterval,
+        CGEventSuppressionState::EventSuppressionStateRemoteMouseDrag,
+    ] {
+        CGEventSource::set_local_events_filter_during_suppression_state(
+            Some(source),
+            permit,
+            state,
+        );
+    }
+    CGEventSource::set_local_events_suppression_interval(Some(source), 0.0);
+}
+
+thread_local! {
+    /// The combined-session source with local input left live, kept for the
+    /// whole run the way Ice keeps its sources (v1.7). The suppression that
+    /// follows a warp or a posted event comes from this state, not only
+    /// from the source that posts.
+    static SESSION_SOURCE: RefCell<Option<CFRetained<CGEventSource>>> =
+        const { RefCell::new(None) };
+}
+
+fn ensure_session_source() {
+    SESSION_SOURCE.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        if cell.is_none()
+            && let Some(source) = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+        {
+            permit_local_input(&source);
+            *cell = Some(source);
+        }
+    });
+}
+
+/// The posting source. Like Ice, it keeps local mouse, keyboard and
+/// system events live while ice-rust posts: by default the window server
+/// suppresses the user's own input for 0.25 s after every synthesized
+/// event, which froze the pointer after each drop in Menu Bar Layout
+/// (v1.7).
 fn source() -> Result<CFRetained<CGEventSource>, InputError> {
-    CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok_or(InputError::NoEventSource)
+    ensure_session_source();
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+        .ok_or(InputError::NoEventSource)?;
+    permit_local_input(&source);
+    Ok(source)
 }
 
 fn mouse_event(

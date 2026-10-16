@@ -159,7 +159,7 @@ impl Controller {
 
     /// Our own synthetic clicks and drags must not trigger anything.
     fn input_busy(&self) -> bool {
-        self.mover.is_busy() || events::is_posting()
+        self.mover.is_busy() || self.agent_arrange.is_moving() || events::is_posting()
     }
 
     /// The active menu bar (the display with our icon) in CG space, read
@@ -246,11 +246,15 @@ impl Controller {
         fresh_menus: bool,
     ) -> Option<MenuBarSpace> {
         let app_menus_end = self.app_menus_end(&bar, fresh_menus)?;
-        let items = on_screen
-            .iter()
-            .filter(|w| w.layer == STATUS_LAYER && overlaps(&w.bounds, &bar))
-            .map(|w| w.bounds)
-            .collect();
+        let items = if self.agent_menu_bar {
+            self.agent_occupied(&bar)?
+        } else {
+            on_screen
+                .iter()
+                .filter(|w| w.layer == STATUS_LAYER && overlaps(&w.bounds, &bar))
+                .map(|w| w.bounds)
+                .collect()
+        };
         let notch = menu_bar_space::notches(self.mtm, windows::primary_height())
             .into_iter()
             .find(|n| overlaps(n, &bar));
@@ -270,7 +274,7 @@ impl Controller {
             return false;
         }
         self.triggers.release_hover();
-        let use_bar = self.settings.borrow().use_ice_bar;
+        let use_bar = self.use_ice_bar();
         if use_bar {
             self.open_bar(section);
         } else {
@@ -293,6 +297,13 @@ impl Controller {
     /// over, like Ice's latch.
     fn trigger_click(&self, event: &NSEvent) {
         if self.input_busy() {
+            return;
+        }
+        // On macOS 27 a click in the empty-looking menu bar lands on our
+        // own expanded divider: the global monitor sees it on MenuBarAgent's
+        // window, then MenuBarAgent forwards it to the divider's button and
+        // the local monitor sees it again (v1.8).
+        if self.agent_menu_bar && self.status.owns_window(event.windowNumber()) {
             return;
         }
         let Some(pointer) = events::pointer_location() else {

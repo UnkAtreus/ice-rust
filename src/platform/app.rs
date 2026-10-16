@@ -40,8 +40,12 @@ use super::status::{self, StatusItems};
 use super::timer;
 use super::updater::Updater;
 use super::windows;
+use crate::agent_bar;
+use crate::arrange::BarModel;
 use crate::bar_layout::{layout, overflow_label, text_tile_size};
-use crate::chain::{DividerLookup, find_divider_or_frame, find_titled, section_chains};
+use crate::chain::{
+    DividerLookup, MSG_NO_ITEM_WINDOWS, find_divider_or_frame, find_titled, section_chains,
+};
 use crate::geometry::{
     self, COLLAPSED_DIVIDER_WIDTH, ControlOrder, Display, MenuBarDisplay, SectionWidths,
     cg_to_appkit, ice_bar_frame, room_needed, status_item_room,
@@ -55,8 +59,12 @@ use crate::rehide::{Activity, Decision, Rehide};
 use crate::sections::{MenuBarState, Section};
 use crate::settings::{self, KEY_CUSTOM_ICON_IMAGE, Settings};
 
+mod agent;
+mod agent_layout;
 mod app_menus;
 mod triggers;
+use agent::Agent;
+use agent_layout::AgentArrange;
 use app_menus::AppMenus;
 use triggers::Triggers;
 
@@ -219,8 +227,17 @@ impl SettingsHost for Host {
         }
     }
 
+    fn load_layout_order(&self) -> Option<BarModel> {
+        let c = self.0.upgrade()?;
+        if c.agent_menu_bar {
+            return c.agent_layout_order();
+        }
+        layout_pane::load_order(&c.names, &c.control_frames())
+    }
+
     fn request_move(&self, request: MoveRequest, done: MoveCallback) {
         match self.0.upgrade() {
+            Some(c) if c.agent_menu_bar => c.agent_request_move(request, done),
             Some(c) => c.mover.request(request, done),
             None => done(Err(super::mover::MoveError::NotFound)),
         }
@@ -268,6 +285,11 @@ struct Controller {
     triggers: Triggers,
     /// Hide application menus (v1.6).
     app_menus: AppMenus,
+    /// MenuBarAgent draws the menu bar (macOS 27, v1.8).
+    agent_menu_bar: bool,
+    agent: Agent,
+    /// Menu Bar Layout on macOS 27.
+    agent_arrange: AgentArrange,
     settle_timer: RefCell<Option<Retained<NSTimer>>>,
     tick_timer: RefCell<Option<Retained<NSTimer>>>,
     observers: RefCell<Vec<Observer>>,
@@ -372,6 +394,9 @@ impl Controller {
             Some(target),
         );
         let use_bar_item = menu_item(mtm, "Use Ice Bar", sel!(toggleIceBar:), "", Some(target));
+        let agent_menu_bar = agent_bar::uses_agent_menu_bar(status::os_major());
+        // The Ice Bar needs item windows to capture (v1.8).
+        use_bar_item.setHidden(agent_menu_bar);
         menu.addItem(&toggle_item);
         menu.addItem(&always_item);
         menu.addItem(&use_bar_item);
@@ -433,6 +458,9 @@ impl Controller {
                 outside_monitor: RefCell::new(None),
                 triggers: Triggers::default(),
                 app_menus: AppMenus::default(),
+                agent_menu_bar,
+                agent: Agent::default(),
+                agent_arrange: AgentArrange::default(),
                 settle_timer: RefCell::new(None),
                 tick_timer: RefCell::new(None),
                 observers: RefCell::new(Vec::new()),
@@ -534,6 +562,10 @@ impl Controller {
         let block = RcBlock::new(move |_note: NonNull<NSNotification>| {
             if let Some(c) = me.upgrade() {
                 c.close_bar();
+                // The longest divider follows the narrowest display (v1.8).
+                if c.agent_menu_bar && !c.mover.is_busy() {
+                    c.set_menu_bar_state(c.status.state());
+                }
             }
         });
         let queue = NSOperationQueue::mainQueue();
@@ -560,6 +592,13 @@ impl Controller {
             .as_ref()
             .is_some_and(|e| e.r#type() == NSEventType::RightMouseUp)
             || flags.contains(NSEventModifierFlags::Control);
+        if self.agent_menu_bar {
+            eprintln!(
+                "ice-rust: [{}] icon clicked in state {:?}",
+                agent::stamp(),
+                self.menu_state()
+            );
+        }
         if wants_menu {
             self.show_menu();
         } else if flags.contains(NSEventModifierFlags::Option) {
@@ -569,8 +608,14 @@ impl Controller {
         }
     }
 
+    /// Whether sections open in the Ice Bar. It needs item windows, which
+    /// the macOS 27 menu bar does not have (v1.8).
+    fn use_ice_bar(&self) -> bool {
+        self.settings.borrow().use_ice_bar && !self.agent_menu_bar
+    }
+
     fn show_menu(&self) {
-        let use_bar = self.settings.borrow().use_ice_bar;
+        let use_bar = self.use_ice_bar();
         self.use_bar_item.setState(if use_bar {
             NSControlStateValueOn
         } else {
@@ -601,7 +646,7 @@ impl Controller {
     fn toggle(&self, section: Section) {
         self.triggers.release_hover();
         self.rehide.borrow_mut().reset(Instant::now());
-        let use_bar = self.settings.borrow().use_ice_bar;
+        let use_bar = self.use_ice_bar();
         if self.bar.is_visible() {
             let same = self.bar_section.get() == section;
             self.close_bar();
@@ -718,21 +763,26 @@ impl Controller {
     /// would push the icon off screen with the section, so everything stays
     /// shown instead until the order is fixed.
     fn set_menu_bar_state(&self, state: MenuBarState) {
-        let lengths = state.lengths();
-        let mut applied = state;
-        if lengths.hidden_expanded || lengths.always_hidden_expanded {
-            let order = self.control_order();
-            if !order.allows(state) {
-                applied = MenuBarState::AllShown;
-                self.show_message(MSG_ICON_LEFT_OF_DIVIDER);
-            } else if !order.dividers_in_order {
-                eprintln!(
-                    "ice-rust: the always-hidden divider is right of the hidden divider; \
-                     Command-drag the double chevron left of the single chevron"
-                );
+        let applied = if self.agent_menu_bar {
+            self.set_agent_state(state)
+        } else {
+            let lengths = state.lengths();
+            let mut applied = state;
+            if lengths.hidden_expanded || lengths.always_hidden_expanded {
+                let order = self.control_order();
+                if !order.allows(state) {
+                    applied = MenuBarState::AllShown;
+                    self.show_message(MSG_ICON_LEFT_OF_DIVIDER);
+                } else if !order.dividers_in_order {
+                    eprintln!(
+                        "ice-rust: the always-hidden divider is right of the hidden divider; \
+                         Command-drag the double chevron left of the single chevron"
+                    );
+                }
             }
-        }
-        self.status.set_state(applied);
+            self.status.set_state(applied);
+            applied
+        };
         self.status
             .set_icon_active(applied != MenuBarState::AllHidden || self.bar.is_visible());
         self.schedule_app_menu_check();
@@ -920,6 +970,7 @@ impl Controller {
             DividerLookup::Found(d) => d,
             DividerLookup::NotFound => return (None, Err(MSG_NO_DIVIDER)),
             DividerLookup::TitlesUnreadable => return (None, Err(MSG_NO_SCREEN_RECORDING)),
+            DividerLookup::NoItemWindows => return (None, Err(MSG_NO_ITEM_WINDOWS)),
         };
         let always = match self.find_always_hidden(all, &frames) {
             DividerLookup::Found(d) => Some(d),
@@ -1139,7 +1190,10 @@ impl Controller {
     fn tick(&self) {
         // The move engine shows and restores sections on its own, and its
         // drag counts as activity, so the idle count starts after it.
-        if self.mover.is_busy() {
+        // While Menu Bar Layout shows every section on macOS 27, nothing
+        // rehides either (v1.8).
+        if self.mover.is_busy() || self.agent_arrange.is_moving() || self.agent_arrange.in_session()
+        {
             self.rehide.borrow_mut().reset(Instant::now());
             return;
         }
@@ -1174,6 +1228,9 @@ impl Controller {
 
     /// Reads the menu bar for the Menu Bar Layout pane.
     fn load_layout(&self) -> LayoutSnapshot {
+        if self.agent_menu_bar {
+            return self.agent_layout_snapshot();
+        }
         layout_pane::load_snapshot(&self.names, &self.control_frames())
     }
 
@@ -1256,6 +1313,8 @@ impl Controller {
         }
         // Shown items may still need the room the app menus take.
         self.schedule_app_menu_check();
+        // Menu Bar Layout kept every section shown on macOS 27 (v1.8).
+        self.end_layout_session();
         // Drop the window after its delegate callback has returned, with its
         // content detached so the pages are freed now (L7).
         let me = self.me.clone();

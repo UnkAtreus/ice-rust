@@ -284,11 +284,27 @@ Command-drag. For each move it:
    up to 3 times with the drop point 4 pt further in the travel direction;
 5. returns the sections to their previous state.
 
-Moves queue and run one at a time. Every event is built before the first one
-is posted, so a mouse-down is never posted without its mouse-up. A click on
+Moves queue and run one at a time; while queued moves wait, the sections the
+last move showed stay shown and go back only after the last one (v1.7).
+Every event is built before the first one is posted, so a mouse-down is
+never posted without its mouse-up. A click on
 the icon during a move changes the state the move returns to, not the
 dividers the move needs. A click in the Ice Bar during a move waits until
 the move has ended, then clicks the item where it is at that moment.
+
+### Menu Bar Layout drops (v1.7)
+
+A drop changes the bars at once (`arrange::apply_drop`, the drop rule's
+order) and the real move runs in the background; further drops queue, and
+the bars are not dimmed while moves run. After the last move the page reads
+only the order (`layout_pane::load_order`, no captures) every 150 ms until
+two reads agree and contain every item the bars show, for at most 3 s, then
+loads the full snapshot once and says whether the menu bar ended up in the
+dropped order (`orders_agree`). A read that misses items keeps the bars as
+dropped. The periodic refresh shows a changed order only when a second read
+150 ms later (1 s when items are missing) agrees. The log says how many
+reads settling took, and for each move how long each phase took and how
+long the pointer stayed hidden.
 
 ## Synthetic input without blocking
 
@@ -304,6 +320,14 @@ posted mouse-down or the hidden cursor, and a deadline posts whatever is
 still queued once the whole batch is overdue. One batch runs at a time; a
 second request is refused as busy and retried by its caller. Quitting posts
 the rest of a batch in flight and restores the cursor first.
+
+Like Ice, the posting source leaves local mouse, keyboard and system events
+live during suppression and sets the local events suppression interval to
+0, and a combined-session source with the same settings lives for the whole
+run, so the user's own mouse is not ignored after a move (v1.7). After
+warping the cursor back, `CGAssociateMouseAndMouseCursorPosition(true)`
+ends the short pause in which the window server ignores the hardware mouse
+after a warp.
 
 A click-through click is one left mouse-down and two left mouse-ups at the
 item's center from an HID-state event source, posted at the session event
@@ -646,6 +670,69 @@ works on macOS 26.3. ice-rust calls it through `objc2-core-graphics` with
 `#[allow(deprecated)]`. Ice keeps the same API because, per its source
 comment, ScreenCaptureKit cannot produce composite images of off-screen
 menu bar items.
+
+## The macOS 27 menu bar (v1.8)
+
+From macOS 27 `MenuBarAgent` draws every status item as a slot of one
+window per display (`crate::agent_bar`, `platform/app/agent.rs`, research in
+[macos27.md](macos27.md)). `status::os_major() >= 27` switches:
+
+- **Items.** Two spacers, untitled at length 0: `IceRust.ControlItem.Spacer`
+  created after the hidden divider and
+  `IceRust.ControlItem.AlwaysHiddenSpacer` after the always-hidden divider
+  (`agent_bar::Spacer`). Seeds (`settings::seed_positions`): icon 1, hidden
+  divider 2, hidden spacer = stored hidden position + 1, always-hidden
+  spacer = stored always-hidden position + 1 or none.
+- **Lengths** (`agent_lengths`): all hidden puts both dividers and each
+  spacer that sits directly left of its divider at `max_length`
+  (floor(narrowest display / 2) - 16 - 2); hidden shown does that for the
+  always-hidden pair only; collapsed dividers show their chevrons and the
+  spacers go back to 0. Spacer adjacency is by order in MenuBarAgent's
+  slots (`spacer_next_to_divider`), not by edges. The macOS 27 log lines
+  carry seconds since launch and note each icon click.
+  MenuBarAgent folds whatever no longer fits into its overflow control.
+- **Order.** `read_agent_layout`, at least 400 ms after the last change,
+  reads MenuBarAgent's slots (`read_from_slots`: our items by identifier,
+  expanded ones where they are, folded ones absent) and keeps the last
+  reading for anything absent; without Accessibility it falls back to
+  AppKit frames that show collapsed items (width up to 100 pt, the spacer
+  up to 17 pt), hidden spacer only. A read follows 500 ms after each show.
+  A divider right of the icon keeps everything shown, as before macOS 27.
+- **Spacer repair** (`start_spacer_repair`): when a spacer is read away
+  from its divider before a hide, it gets a handle (`set_spacer_handle`,
+  length 20 and a title), is Command-dragged to `drop_point` left of the
+  divider (frames from MenuBarAgent), goes back to length 0, and the hide
+  runs once a read (every 250 ms, up to 8) finds it next to the divider. At
+  most twice a run per spacer.
+- **Not in the menu bar.** With no frames for our items the hide polls
+  every second, and after the second try an alert points to Allow in the
+  Menu Bar (System Settings > Menu Bar).
+- **Identifiers.** Each button's accessibility identifier is its autosave
+  name, which MenuBarAgent's tree shows as the slot's `AXIdentifier`;
+  `agent_layout` finds our items by it, by frame only as a fallback.
+- **Empty space.** `menu_bar_space::agent_slots` reads the slots of
+  MenuBarAgent's window on the menu bar (Accessibility, 0.1 s timeout); our
+  expanded items count as empty. The local click monitor ignores clicks on
+  our own item windows, which MenuBarAgent forwards after the global monitor
+  has seen them.
+- **Menu Bar Layout** (`platform/app/agent_layout.rs`,
+  `layout_pane::read_agent`): the bars come from MenuBarAgent's slots on
+  the icon's display, split by our dividers' frames (`agent_layout`);
+  ids are hashes of the item's process, name or identifier and ordinal
+  (`slot_ids`), stable across reads. Apple's items
+  (`com.apple.menuextra.*`) are locked. Images are cropped from one capture
+  of MenuBarAgent's menu bar window, else the Window Server "Menubar"
+  window, else the screen, the first crop that is not fully transparent.
+  Loading the page shows every section (folded items have no position) and
+  reloads after 500 ms; Settings closing restores the earlier state, and
+  nothing rehides meanwhile. A move is one Command-drag to
+  `arrange::drop_point` next to the target (the hidden section's end is
+  left of the spacer), read back after 500 ms with `model_matches`, up to
+  `MOVE_RETRIES` drops; moves queue one at a time.
+- **Off:** the Ice Bar (sections show in the menu bar) and Hide app menus;
+  their Settings controls say "Not available on macOS 27 yet".
+- **Probe.** `agent_slots` in the JSON (x, y, width, height, pid, name,
+  overflow_control, folded) and a slot table in the text report.
 
 ## Limitations and differences from Ice
 

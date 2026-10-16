@@ -35,19 +35,26 @@ use objc2_foundation::{
     NSArray, NSDictionary, NSObject, NSPoint, NSRect, NSSize, NSString, NSTimer,
 };
 
-use super::capture::{self, CaptureMethod, ItemImage};
+use super::capture::{self, CaptureMethod, ItemImage, SlotSource};
+use super::menu_bar_space;
 use super::timer;
 use super::ui::{Weight, font, rect, redraw_on_resize, srgb, tinted_symbol};
 use super::windows;
+use crate::agent_bar::{AgentLayout, AgentSlot, OurFrames, agent_layout};
 use crate::arrange::{Anchors, BarModel, bar_at, clamp_insertion, marker_x};
 use crate::bar_scroll::{
     StripLayout, autoscroll_offset, document_x, insertion_at, keep_right_distance, strip_layout,
     visible_x,
 };
-use crate::chain::{DividerLookup, find_divider_or_frame, find_titled, section_chains};
-use crate::geometry::menu_bar_display;
+use crate::chain::{
+    DividerLookup, MSG_NO_ITEM_WINDOWS, SectionChains, find_divider_or_frame, find_titled,
+    section_chains,
+};
+use crate::geometry::{menu_bar_display, menu_bar_window};
 use crate::image_check::prefers_dark_text;
-use crate::model::{ControlFrames, ControlNames, Rect, WindowId, WindowRecord};
+use crate::model::{
+    ControlFrames, ControlNames, MENU_BAR_AGENT_OWNER, Rect, STATUS_LAYER, WindowId, WindowRecord,
+};
 use crate::sections::Section;
 
 /// Bar fill when the menu bar color cannot be sampled, per appearance.
@@ -168,20 +175,31 @@ fn tile_image(window: &WindowRecord, captured: &ItemImage) -> TileImage {
 /// likely to succeed: the off-screen hidden and always-hidden items first,
 /// then the on-screen visible items and the color sample, which timed out
 /// in `render-settings` on the development host.
-pub fn load_snapshot(names: &ControlNames, frames: &ControlFrames) -> LayoutSnapshot {
+/// One read of the window list turned into bars, without images.
+struct ModelRead {
+    all: Vec<WindowRecord>,
+    hidden: WindowRecord,
+    icon: Option<WindowRecord>,
+    chains: SectionChains,
+    model: BarModel,
+}
+
+/// Reads the bars from the window list, or says why they are empty.
+fn read_model(names: &ControlNames, frames: &ControlFrames) -> Result<ModelRead, String> {
     let all = windows::list_windows();
     let hidden =
         match find_divider_or_frame(&all, &names.hidden, &names.icon, frames.hidden.as_ref()) {
             DividerLookup::Found(d) => d,
             DividerLookup::NotFound => {
-                return LayoutSnapshot::empty(&format!(
+                return Err(format!(
                     "{} is not in the menu bar. Quit and reopen ice-rust",
                     names.hidden
                 ));
             }
             DividerLookup::TitlesUnreadable => {
-                return LayoutSnapshot::empty("Screen Recording permission needed");
+                return Err("Screen Recording permission needed".to_string());
             }
+            DividerLookup::NoItemWindows => return Err(MSG_NO_ITEM_WINDOWS.to_string()),
         };
     let always = match find_divider_or_frame(
         &all,
@@ -200,6 +218,32 @@ pub fn load_snapshot(names: &ControlNames, frames: &ControlFrames) -> LayoutSnap
         always_hidden_divider: always.as_ref().map(|d| d.id),
     };
     let model = BarModel::from_sections(&chains, names, anchors);
+    Ok(ModelRead {
+        all,
+        hidden,
+        icon,
+        chains,
+        model,
+    })
+}
+
+/// Only the order of the bars, without capturing any image: cheap enough
+/// to poll while the menu bar settles after a move (v1.7).
+pub fn load_order(names: &ControlNames, frames: &ControlFrames) -> Option<BarModel> {
+    read_model(names, frames).ok().map(|read| read.model)
+}
+
+pub fn load_snapshot(names: &ControlNames, frames: &ControlFrames) -> LayoutSnapshot {
+    let ModelRead {
+        all,
+        hidden,
+        icon,
+        chains,
+        model,
+    } = match read_model(names, frames) {
+        Ok(read) => read,
+        Err(notice) => return LayoutSnapshot::empty(&notice),
+    };
 
     let displays = windows::displays();
     let icon_rect = icon.as_ref().map(|w| w.bounds).or(frames.icon);
@@ -254,6 +298,135 @@ pub fn load_snapshot(names: &ControlNames, frames: &ControlFrames) -> LayoutSnap
         None => (None, false),
     };
 
+    LayoutSnapshot {
+        model: Some(model),
+        images,
+        bar_color,
+        menu_bar_height,
+        notice: None,
+        captures,
+        stale,
+        color_stale,
+    }
+}
+
+/// The macOS 27 menu bar on `display` split into sections (v1.8), or why
+/// it cannot be.
+pub fn read_agent(ours: &OurFrames, display: &Rect) -> Result<AgentLayout, String> {
+    let slots: Vec<AgentSlot> = menu_bar_space::agent_dump()
+        .ok_or("Accessibility permission needed to read the menu bar")?
+        .into_iter()
+        .filter(|s| {
+            (s.frame.y - display.y).abs() <= 1.0
+                && s.frame.min_x() >= display.min_x() - 1.0
+                && s.frame.max_x() <= display.max_x() + 1.0
+        })
+        .collect();
+    agent_layout(&slots, std::process::id() as i32, ours)
+        .ok_or_else(|| "The hidden divider is not in the menu bar".to_string())
+}
+
+/// `load_order` for the macOS 27 menu bar.
+pub fn load_agent_order(
+    names: &ControlNames,
+    ours: &OurFrames,
+    display: &Rect,
+) -> Option<BarModel> {
+    read_agent(ours, display)
+        .ok()
+        .map(|layout| layout.model(names))
+}
+
+/// `load_snapshot` for the macOS 27 menu bar: the bars from MenuBarAgent's
+/// slots, each item cropped from MenuBarAgent's menu bar window, the
+/// Window Server's menu bar window or the screen, whichever draws it.
+pub fn load_agent_snapshot(
+    names: &ControlNames,
+    ours: &OurFrames,
+    display: &Rect,
+    menu_bar_height: f64,
+) -> LayoutSnapshot {
+    let layout = match read_agent(ours, display) {
+        Ok(layout) => layout,
+        Err(notice) => return LayoutSnapshot::empty(&notice),
+    };
+    if layout.folded > 0 {
+        eprintln!(
+            "ice-rust: {} items are folded into the system overflow and not shown in Menu Bar Layout",
+            layout.folded
+        );
+    }
+    let model = layout.model(names);
+    let all = windows::list_windows();
+    let agent_window = all.iter().find(|w| {
+        w.owner_name.as_deref() == Some(MENU_BAR_AGENT_OWNER)
+            && (w.bounds.x - display.x).abs() <= 1.0
+            && (w.bounds.y - display.y).abs() <= 1.0
+    });
+    let region = agent_window.map_or(
+        Rect::new(display.x, display.y, display.width, menu_bar_height),
+        |w| w.bounds,
+    );
+    let mut sources: Vec<SlotSource> = agent_window
+        .map(|w| SlotSource::Window(w.id))
+        .into_iter()
+        .collect();
+    if let Some(menubar) = menu_bar_window(&all, display) {
+        sources.push(SlotSource::Window(menubar.id));
+    }
+    sources.push(SlotSource::Screen);
+
+    let mut images = HashMap::new();
+    let mut captures = Vec::new();
+    let mut stale = HashSet::new();
+    for section in [Section::Hidden, Section::AlwaysHidden, Section::Visible] {
+        let ids = model.ids(section);
+        let rects: Vec<Rect> = ids.iter().filter_map(|&id| layout.frame(id)).collect();
+        if rects.len() != ids.len() || ids.is_empty() {
+            continue;
+        }
+        let result = capture::capture_slots_bounded(sources.clone(), region, rects.clone());
+        let timed_out = result.is_err();
+        let shots = result.unwrap_or_else(|_| rects.iter().map(|_| None).collect());
+        let mut with_image = 0;
+        for ((&id, rect), shot) in ids.iter().zip(&rects).zip(shots) {
+            let record = WindowRecord {
+                id,
+                layer: STATUS_LAYER,
+                bounds: *rect,
+                title: None,
+                owner_name: None,
+                on_screen: true,
+            };
+            let item = match shot {
+                Some(image) => {
+                    let scale = CGImage::width(Some(&image)) as f64 / rect.width.max(1.0);
+                    ItemImage {
+                        id,
+                        image: Some(image),
+                        method: CaptureMethod::Composite,
+                        transparent: false,
+                        scale,
+                    }
+                }
+                None if timed_out => ItemImage::missing(id, CaptureMethod::TimedOut),
+                None => ItemImage::missing(id, CaptureMethod::Failed),
+            };
+            if timed_out {
+                stale.insert(id);
+            }
+            let tile = tile_image(&record, &item);
+            if tile.image.is_some() {
+                with_image += 1;
+            }
+            images.insert(id, tile);
+        }
+        captures.push((section, with_image, ids.len() - with_image, timed_out));
+    }
+    let (bar_color, color_stale) = match capture::menu_bar_color(&all, display, menu_bar_height) {
+        Ok(color) => (color, false),
+        Err(_) => (None, true),
+    };
     LayoutSnapshot {
         model: Some(model),
         images,
@@ -734,10 +907,19 @@ impl LayoutCanvas {
         f(&self.ivars().state.borrow().snapshot)
     }
 
+    /// Shows `model` in place of the current bars, keeping the images, so
+    /// a drop shows at once while the real item moves (v1.7).
+    pub fn show_model(&self, model: BarModel) {
+        self.ivars().state.borrow_mut().snapshot.model = Some(model);
+        self.relayout();
+        self.redraw();
+    }
+
+    /// Marks moves in flight. The bars stay as they are and keep taking
+    /// drags, which queue behind the running move; the periodic refresh
+    /// waits (`is_idle`).
     pub fn set_busy(&self, busy: bool) {
         self.ivars().state.borrow_mut().busy = busy;
-        self.setAlphaValue(if busy { 0.55 } else { 1.0 });
-        self.redraw();
     }
 
     pub fn is_idle(&self) -> bool {
@@ -1188,9 +1370,6 @@ impl LayoutCanvas {
     }
 
     fn press(&self, point: (f64, f64)) {
-        if self.ivars().state.borrow().busy {
-            return;
-        }
         match self.hit(point) {
             None => {}
             Some(Hit {

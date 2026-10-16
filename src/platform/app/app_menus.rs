@@ -77,10 +77,8 @@ impl Controller {
     }
 
     fn check_app_menus(&self) {
-        let (enabled, use_ice_bar) = {
-            let s = self.settings.borrow();
-            (s.hide_app_menus, s.use_ice_bar)
-        };
+        let enabled = self.settings.borrow().hide_app_menus;
+        let use_ice_bar = self.use_ice_bar();
         let mut situation = MenuSituation {
             enabled,
             use_ice_bar,

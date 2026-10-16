@@ -10,7 +10,7 @@
 //! asked for while the move ran. Every wait is a timer on the main run
 //! loop.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt;
 use std::rc::{Rc, Weak};
@@ -141,6 +141,8 @@ struct Job {
     phase: Phase,
     since: Instant,
     attempt: usize,
+    /// Time spent in each finished phase, for the log line at the end.
+    timeline: Vec<(Phase, Duration)>,
 }
 
 pub struct Mover {
@@ -149,6 +151,9 @@ pub struct Mover {
     host: Rc<dyn MoverHost>,
     queue: RefCell<VecDeque<(MoveRequest, MoveCallback)>>,
     job: RefCell<Option<Job>>,
+    /// The state to return to, handed from a finished move to the queued
+    /// one after it: queued moves keep the sections shown (v1.7).
+    carry: Cell<Option<MenuBarState>>,
     ticker: RefCell<Option<Retained<NSTimer>>>,
 }
 
@@ -179,6 +184,7 @@ impl Mover {
             host,
             queue: RefCell::new(VecDeque::new()),
             job: RefCell::new(None),
+            carry: Cell::new(None),
             ticker: RefCell::new(None),
         })
     }
@@ -214,6 +220,7 @@ impl Mover {
         }
         self.job.borrow_mut().take();
         self.queue.borrow_mut().clear();
+        self.carry.take();
     }
 
     /// Queues a move. `done` runs on the main thread when it ends.
@@ -230,6 +237,12 @@ impl Mover {
             return;
         }
         let Some((request, done)) = self.queue.borrow_mut().pop_front() else {
+            // The queue ran dry after moves that kept the sections shown.
+            if let Some(previous) = self.carry.take()
+                && self.host.menu_bar_state() != previous
+            {
+                self.host.set_menu_bar_state(previous);
+            }
             return;
         };
         if !permissions::check().can_post_events() {
@@ -237,11 +250,12 @@ impl Mover {
             self.start_next();
             return;
         }
-        let previous = self.host.menu_bar_state();
-        let needed = previous.covering(&request.sections);
+        let current = self.host.menu_bar_state();
+        let previous = self.carry.take().unwrap_or(current);
+        let needed = current.covering(&request.sections);
         // Read while the sections are still where the layout knows them.
         let room = self.host.menu_bar_room(needed);
-        if needed != previous {
+        if needed != current {
             self.host.set_menu_bar_state(needed);
         }
         *self.job.borrow_mut() = Some(Job {
@@ -251,6 +265,7 @@ impl Mover {
             room,
             phase: Phase::Showing,
             since: Instant::now(),
+            timeline: Vec::new(),
             attempt: 0,
         });
         let me = self.me.clone();
@@ -267,6 +282,7 @@ impl Mover {
 
     fn set_phase(&self, phase: Phase) {
         if let Some(job) = self.job.borrow_mut().as_mut() {
+            job.timeline.push((job.phase, job.since.elapsed()));
             job.phase = phase;
             job.since = Instant::now();
         }
@@ -279,8 +295,27 @@ impl Mover {
         let Some(mut job) = self.job.borrow_mut().take() else {
             return;
         };
-        if self.host.menu_bar_state() != job.previous {
-            self.host.set_menu_bar_state(job.previous);
+        job.timeline.push((job.phase, job.since.elapsed()));
+        let steps: Vec<String> = job
+            .timeline
+            .iter()
+            .map(|(phase, took)| format!("{phase:?} {} ms", took.as_millis()))
+            .collect();
+        eprintln!(
+            "ice-rust: move {} after {} attempt(s): {}",
+            if result.is_ok() { "done" } else { "failed" },
+            job.attempt + 1,
+            steps.join(", ")
+        );
+        // Showing and hiding the sections between queued moves reflows the
+        // menu bar twice per move, so the next move inherits the state to
+        // return to and only the last one restores it (v1.7).
+        if self.queue.borrow().is_empty() {
+            if self.host.menu_bar_state() != job.previous {
+                self.host.set_menu_bar_state(job.previous);
+            }
+        } else {
+            self.carry.set(Some(job.previous));
         }
         if let Some(done) = job.done.take() {
             done(result);

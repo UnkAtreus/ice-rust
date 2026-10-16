@@ -11,6 +11,13 @@ pub const ICON_AUTOSAVE: &str = "IceRust.ControlItem.Visible";
 pub const DIVIDER_AUTOSAVE: &str = "IceRust.ControlItem.Hidden";
 /// Autosave name of the always-hidden-section divider item.
 pub const ALWAYS_HIDDEN_AUTOSAVE: &str = "IceRust.ControlItem.AlwaysHidden";
+/// Owner of the macOS 27 menu bar window, which draws every status item.
+pub const MENU_BAR_AGENT_OWNER: &str = "MenuBarAgent";
+/// Autosave name of the spacer left of the hidden divider (macOS 27, v1.8).
+pub const SPACER_AUTOSAVE: &str = "IceRust.ControlItem.Spacer";
+/// Autosave name of the spacer left of the always-hidden divider (macOS 27,
+/// v1.8).
+pub const ALWAYS_HIDDEN_SPACER_AUTOSAVE: &str = "IceRust.ControlItem.AlwaysHiddenSpacer";
 /// Common prefix of our three autosave names.
 pub const CONTROL_ITEM_PREFIX: &str = "IceRust.ControlItem.";
 /// Prefix of Ice's control item titles (ledger section 2).

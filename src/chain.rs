@@ -25,7 +25,19 @@ pub enum DividerLookup {
     /// No status window has a readable title, which means the process lacks
     /// Screen Recording.
     TitlesUnreadable,
+    /// Fewer than `MIN_ITEM_WINDOWS` status windows exist: the menu bar
+    /// draws its items without windows (macOS 27), so none can be read.
+    NoItemWindows,
 }
+
+/// The clock and Control Center alone give every menu bar before macOS 27
+/// at least this many layer-25 windows. On macOS 27 there is at most one,
+/// an empty window of ice-rust's own.
+pub const MIN_ITEM_WINDOWS: usize = 2;
+
+/// Shown instead of the items when the lookup finds `NoItemWindows`.
+pub const MSG_NO_ITEM_WINDOWS: &str =
+    "Not available on macOS 27 yet; Command-drag items in the menu bar instead";
 
 /// All three sections, each in left-to-right order.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -48,10 +60,13 @@ pub fn find_divider(
         .collect();
     match matches.as_slice() {
         [] => {
+            let status = windows.iter().filter(|w| w.layer == STATUS_LAYER).count();
             let readable = windows
                 .iter()
                 .any(|w| w.layer == STATUS_LAYER && w.title_str().is_some());
-            if readable {
+            if status < MIN_ITEM_WINDOWS {
+                DividerLookup::NoItemWindows
+            } else if readable {
                 DividerLookup::NotFound
             } else {
                 DividerLookup::TitlesUnreadable
@@ -879,6 +894,38 @@ mod tests {
                 "Ice.ControlItem.Visible"
             ),
             DividerLookup::TitlesUnreadable
+        );
+    }
+
+    #[test]
+    fn find_divider_reports_a_menu_bar_without_item_windows() {
+        // Issue #2, macOS 27.0.1: with every permission granted, the only
+        // layer-25 window is an untitled one of ice-rust's own.
+        let mut windows = vec![w(9, 1636.0, 0.0, 0.0, 0.0, "", true)];
+        windows[0].title = None;
+        let lookup = find_divider(
+            &windows,
+            "IceRust.ControlItem.Hidden",
+            "IceRust.ControlItem.Visible",
+        );
+        assert_eq!(lookup, DividerLookup::NoItemWindows);
+        assert_eq!(
+            find_divider(
+                &[],
+                "IceRust.ControlItem.Hidden",
+                "IceRust.ControlItem.Visible"
+            ),
+            DividerLookup::NoItemWindows
+        );
+        let frame = Rect::new(1636.0, 0.0, 0.0, 0.0);
+        assert_eq!(
+            find_divider_or_frame(
+                &windows,
+                "IceRust.ControlItem.Hidden",
+                "IceRust.ControlItem.Visible",
+                Some(&frame),
+            ),
+            DividerLookup::NoItemWindows
         );
     }
 

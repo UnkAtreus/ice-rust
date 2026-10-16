@@ -1071,3 +1071,117 @@ on scroll still shows the items, and the hiding then brings the icon back.
 Hand test (2026-10-15, maintainer): with MenuCrowd in front on the
 built-in display, a real two-finger swipe hid the app menus and showed every
 icon, and hiding the items brought the menus and the focus back.
+
+## v1.7: smoother Menu Bar Layout moves (maintainer request 2026-10-15)
+
+Maintainer reports: dragging in Menu Bar Layout was not smooth like Ice
+(a loading state, the Always-Hidden bar disappearing and coming back, "The
+menu bar order does not match the requested order"); after a first fix,
+dragging always-hidden items left to right made items on the right vanish
+for a while after the drop with "The menu bar did not end up in the order
+you dropped", and the pointer flickered and froze briefly.
+
+| Finding | Evidence | Change |
+|---|---|---|
+| The settle check accepted reads that were missing items | Log: "layout settled after 2 reads (~303 ms)" while items were still sliding back; a probe a minute later showed every always-hidden item. | Settling needs two equal reads that also contain every item the bars show; otherwise the bars keep the dropped order and the periodic refresh catches up. |
+| Every read captured images and the page dimmed while moving | Code review. | Order-only reads while settling; the dropped order shows at once (`apply_drop`), drags stay possible and queue. |
+| Sections shown for a move went back between queued moves | Code review. | Queued moves keep the sections shown until the last one. |
+| The pointer froze after moves | Ice's evidence: its event sources permit local mouse, keyboard and system events during suppression with a suppression interval of 0, and it posts only a Command mouse-down and mouse-up. | The same permits and interval on our sources, one kept for the run, and re-associating mouse and cursor after the warp back. |
+
+Not adopted: Ice moves off-screen items through a private event relay with
+a source-PID helper on macOS 26, a larger rework.
+
+Hand test (2026-10-16, maintainer, macOS 26): "smoother". The log showed
+four moves, each with the pointer hidden 101 to 106 ms, three placed on the
+first drop and one on the second, and the bars settled after 2 to 4 reads
+(304 to 606 ms).
+
+## v1.8: the macOS 27 menu bar (issue #2, 2026-10-16)
+
+macOS 27 draws the menu bar in `MenuBarAgent`: one window per display, each
+status item a slot in it, no item windows in the window list, and a status
+item as wide as half the display dropped instead of laid out. ice-rust 0.1.6
+found no windows and showed "Screen Recording permission needed", and its
+10000 pt divider was dropped, so nothing hid. The research, the VM
+experiments and the design are in [macos27.md](macos27.md); this entry
+records the decisions and the live test.
+
+Approach A (no private API): hiding uses macOS's own overflow. The hidden
+divider and a new spacer item directly left of it grow to the longest length
+every display lays out (floor(narrowest width / 2) - 18), and MenuBarAgent
+folds every item that no longer fits, from the left. Over-filling is safe:
+an experiment with too little room folded the spacer and the divider too and
+kept the visible items. The room is not measured. Before macOS 27 nothing
+changes.
+
+| Decision | Why |
+|---|---|
+| A visible spacer of length 0 (a 16 pt blank) left of each divider | One item at the cap covers at most half the display; with Finder in front on 1920 pt that left 7 test items on the bar. A hidden item keeps an old position value while MenuBarAgent recomputes the others, so it could drift right of the divider. The always-hidden spacer came after a maintainer report: with only the always-hidden divider growing, always-hidden items stayed on the bar while the hidden section showed, all of them with ice-rust's short menus in front. |
+| Seeds icon 1, hidden divider 2, spacer = hidden + 1 | MenuBarAgent orders items by this value from the trailing end and reads 0 as no value; the macOS 26 seeds put the icon at the far left (folded first) and the divider at the far right. It reads an app's seed only for an item it has not placed yet. |
+| Order and spacer place from AppKit frames, only when they show the item collapsed and 400 ms after the last change | AppKit reports the new width at once but the old position until MenuBarAgent lays out again; a folded item's frame is not where it is. Reading early made a hide right after a show leave the spacer at 0. |
+| Show on click takes occupied space from MenuBarAgent's Accessibility tree, our expanded items excluded | Without item windows every click counted as empty space. A click on the empty-looking bar lands on our own expanded divider: the global monitor sees it on MenuBarAgent's window and MenuBarAgent forwards it to the button 23 ms later, so the local monitor ignores clicks on our own item windows (it showed and hid at once before). |
+| Ice Bar and Hide app menus off, with "Not available on macOS 27 yet" | They need item windows (captures, the chain walk). The stored choices apply again before macOS 27. |
+| Menu Bar Layout from MenuBarAgent's slots, with every section shown while the page is open | Folded items have no position to read or drag, and only the ones that would fit in the overflow are even listed. Ids are hashes of process, name and ordinal, since there are no window ids. A move is one Command-drag (it worked in one try in the VM) read back with `model_matches`. |
+| `probe` lists MenuBarAgent's slots, folded or not | For bug reports; a folded slot sits left of the overflow control. |
+| Our buttons carry their autosave name as accessibility identifier | AppKit's frames lag more than 500 ms behind a move, so finding our items in MenuBarAgent's tree by frame failed after a move (a move reported failed while it had worked). |
+| Spacer repair: a handle (length 20, a title), one Command-drag, back to a blank slot | MenuBarAgent recomputed positions while IceRust was switched off under Allow in the Menu Bar and put the spacer right of the divider. A blank item of length 0 does not move under a Command-drag. |
+| An alert when our items have no frames after launch | macOS draws nothing for an app switched off under Allow in the Menu Bar, and ice-rust has no icon to click then. |
+
+Live test in a UTM VM (macOS 27.0.1 26A434, 1920 x 1010, maintainer
+approved, synthetic clicks and drags only inside the VM after an idle
+check), with a test app adding 16 dummy items:
+
+- Upgrade path (MenuBarAgent kept 0.1.6's divider at 1, right of the icon):
+  the order check kept everything shown with "Command-drag the icon right of
+  the dividers"; the new spacer landed directly left of the divider. After
+  one Command-drag of the icon, a click on the icon hid every item except the
+  icon, Control Center and the clock, with no overflow control drawn.
+- Show and hide: the icon toggles; a click in the empty-looking bar shows
+  (Show on click); a click on another item does nothing.
+- Fresh install (IceRust's MenuBarAgent entries and defaults removed,
+  MenuBarAgent restarted): seeds 1, 2, 3; shown order input menu, Spotlight,
+  spacer, divider, icon, Control Center, clock; the launch hide hid
+  everything else.
+- Settings render: Use Ice Bar and Hide app menus off and disabled with the
+  note; Menu Bar Layout shows the note in each section.
+
+Second session, same VM after it restarted (2026-10-16 evening):
+
+- IceRust's items were missing: MenuBarAgent logged `isAllowed: false`
+  for them. After the maintainer switched IceRust on under Allow in the
+  Menu Bar the items came back with the spacer right of the divider.
+- Spacer repair: the first version dragged the blank spacer, which did not
+  move; with a handle one drag put it back (stored order spacer 191,
+  divider 165), and the launch hide used the spacer.
+- Menu Bar Layout: the page showed all three sections with item images;
+  dragging a tile from Always-Hidden to Hidden, from Always-Hidden to
+  Visible and from Visible back to Hidden each moved the real item in one
+  Command-drag (about 105 ms with the pointer hidden) and settled after two
+  reads; closing Settings hid the sections again. The move from
+  Always-Hidden to Visible first reported a failure because the frame
+  lookup lagged; identifiers fixed that.
+
+Third session (maintainer report with screenshots): showing the hidden
+section left always-hidden items on the bar. With the always-hidden
+spacer, created new at the far left and dragged next to its divider at the
+first hide (one drag), showing the hidden section folded every
+always-hidden item with System Settings in front; both spacers kept their
+places across a relaunch. Order and spacer readings now come from
+MenuBarAgent's slots. Test note: the click helper shares ice-rust's bundle
+id for its Accessibility grant, so while ice-rust is a regular app
+(Settings open) launching it sends ice-rust a reopen instead.
+
+Fourth session (maintainer report: sometimes partial hiding with hidden
+and always-hidden items on the left, always-hidden items flashing on the
+left when hiding). The log showed spacer readings flipping between "next
+to its divider" and "not" without any move: edges were compared while
+MenuBarAgent animated the change. Adjacency is now by order (no slot
+between), and the always-hidden pair stays grown while everything hides.
+Ten clicks on the icon at 0.7 to 2.5 s intervals then toggled correctly
+every time with both spacers in use, and screenshots taken during a hide
+showed no always-hidden items. The report that a click on the icon
+sometimes does nothing did not reproduce; the log now records each icon
+click.
+
+Not tested yet: a notched display, several displays, Option-click (the
+always-hidden section), Show on hover and scroll, a real user's menu bar.

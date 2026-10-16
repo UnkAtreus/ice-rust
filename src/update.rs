@@ -81,6 +81,39 @@ pub const REGRANT_NOTE: &str = "macOS does not apply the earlier grants to this 
      minus (-) button. Turning the switch off and on does not help. Then quit and open IceRust \
      and grant both when it asks.";
 
+/// Shown once when no version was launched before and a permission is
+/// missing. That is a first launch, or an update from 0.1.0, which did not
+/// store the version, so the text fits both.
+pub const GRANT_NOTE: &str = "In Privacy & Security > Screen Recording and in Privacy & \
+     Security > Accessibility, turn on IceRust, then quit and open IceRust. If IceRust is \
+     already switched on there from an earlier version, select it, remove it with the minus (-) \
+     button and grant it again; turning the switch off and on does not help.";
+
+/// Which permission notice the first launch of a version shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PermissionNotice {
+    /// No version was launched before: `GRANT_NOTE`.
+    Grant,
+    /// Another version was launched before: `REGRANT_NOTE`.
+    Regrant,
+}
+
+impl PermissionNotice {
+    pub fn title(self) -> &'static str {
+        match self {
+            PermissionNotice::Grant => "ice-rust needs Screen Recording and Accessibility",
+            PermissionNotice::Regrant => "ice-rust needs its permissions again",
+        }
+    }
+
+    pub fn text(self) -> &'static str {
+        match self {
+            PermissionNotice::Grant => GRANT_NOTE,
+            PermissionNotice::Regrant => REGRANT_NOTE,
+        }
+    }
+}
+
 /// Whether `key` is the placeholder, which no update verifies against.
 pub fn is_placeholder_key(key: &[u8; 32]) -> bool {
     *key == PLACEHOLDER_PUBLIC_KEY
@@ -486,18 +519,24 @@ pub fn from_epoch_seconds(seconds: f64) -> Option<SystemTime> {
         .flatten()
 }
 
-/// Whether the first launch of this version opens Settings on the
-/// Permissions page: the version differs from `LastLaunchedVersion` (a
-/// missing value differs too) and a permission is missing. A build with
-/// another signing requirement, such as an ad-hoc build before 0.1.5, does
-/// not match the grants of the previous one.
-pub fn needs_permission_notice(
+/// The notice the first launch of this version shows, if any: the version
+/// differs from `LastLaunchedVersion` (a missing value differs too) and a
+/// permission is missing. A build with another signing requirement, such as
+/// an ad-hoc build before 0.1.5, does not match the grants of the previous
+/// one. With nothing stored there were no earlier grants to speak of.
+pub fn permission_notice(
     last_launched: Option<&str>,
     current: &str,
     screen_recording: bool,
     can_post_events: bool,
-) -> bool {
-    last_launched != Some(current) && !(screen_recording && can_post_events)
+) -> Option<PermissionNotice> {
+    if last_launched == Some(current) || (screen_recording && can_post_events) {
+        return None;
+    }
+    Some(match last_launched {
+        None => PermissionNotice::Grant,
+        Some(_) => PermissionNotice::Regrant,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1347,19 +1386,26 @@ mod tests {
 
     #[test]
     fn permission_notice_on_first_launch_of_a_version() {
+        use PermissionNotice::{Grant, Regrant};
         // Updated and a grant no longer applies.
-        assert!(needs_permission_notice(Some("0.1.0"), "0.2.0", false, true));
-        assert!(needs_permission_notice(Some("0.1.0"), "0.2.0", true, false));
-        // Nothing stored (first launch, or an update from 0.1.0).
-        assert!(needs_permission_notice(None, "0.2.0", false, false));
+        assert_eq!(
+            permission_notice(Some("0.1.0"), "0.2.0", false, true),
+            Some(Regrant)
+        );
+        assert_eq!(
+            permission_notice(Some("0.1.0"), "0.2.0", true, false),
+            Some(Regrant)
+        );
+        // Nothing stored (first launch, or an update from 0.1.0): no
+        // "again", since a first launch had no earlier grants.
+        assert_eq!(permission_notice(None, "0.2.0", false, false), Some(Grant));
         // Same version, or every permission in place.
-        assert!(!needs_permission_notice(
-            Some("0.2.0"),
-            "0.2.0",
-            false,
-            false
-        ));
-        assert!(!needs_permission_notice(Some("0.1.0"), "0.2.0", true, true));
+        assert_eq!(
+            permission_notice(Some("0.2.0"), "0.2.0", false, false),
+            None
+        );
+        assert_eq!(permission_notice(Some("0.1.0"), "0.2.0", true, true), None);
+        assert_eq!(permission_notice(None, "0.2.0", true, true), None);
     }
 
     mod signatures {

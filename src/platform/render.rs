@@ -11,10 +11,11 @@ use std::rc::Rc;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 
-use super::layout_pane::{LayoutSnapshot, load_snapshot};
+use super::layout_pane::{LayoutSnapshot, load_order, load_snapshot};
 use super::menu_icon::CustomIcon;
 use super::mover::{MoveCallback, MoveError, MoveRequest};
 use super::settings_window::{DEFAULT_SIZE, Page, SettingsHost, SettingsWindow};
+use crate::arrange::BarModel;
 use crate::model::{CONTROL_ITEM_PREFIX, ControlFrames, ControlNames, ICE_CONTROL_ITEM_PREFIX};
 use crate::sections::Section;
 use crate::settings::{self, Settings};
@@ -60,6 +61,14 @@ impl SettingsHost for RenderHost {
     fn apply_settings(&self, _settings: &Settings) {}
 
     fn set_custom_icon(&self, _icon: &CustomIcon) {}
+
+    fn load_layout_order(&self) -> Option<BarModel> {
+        let prefix = self.prefix.as_deref().unwrap_or(CONTROL_ITEM_PREFIX);
+        load_order(
+            &ControlNames::with_prefix(prefix),
+            &ControlFrames::default(),
+        )
+    }
 
     fn load_layout(&self) -> LayoutSnapshot {
         let prefixes: Vec<&str> = match &self.prefix {

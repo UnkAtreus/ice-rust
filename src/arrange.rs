@@ -255,6 +255,74 @@ pub fn drop_destination(
     Ok(DropOutcome::Move(destination))
 }
 
+/// The bars as they look once `item` sits where the user dropped it, at
+/// `index` in `section` with the drop rule's clamp applied. The Menu Bar
+/// Layout page shows this at once while the real item moves (v1.7), the
+/// way Ice's layout editor does. `None` when the item or the move is not
+/// allowed (`drop_destination`).
+pub fn apply_drop(
+    model: &BarModel,
+    item: WindowId,
+    section: Section,
+    index: usize,
+) -> Option<BarModel> {
+    let (from_section, from_index) = model.find(item)?;
+    if !matches!(
+        drop_destination(model, item, section, index),
+        Ok(DropOutcome::Move(_))
+    ) {
+        return None;
+    }
+    let index = clamp_insertion(model, item, section, index);
+    let mut next = model.clone();
+    let tile = bar_mut(&mut next, from_section).remove(from_index);
+    let bar = bar_mut(&mut next, section);
+    bar.insert(index.min(bar.len()), tile);
+    Some(next)
+}
+
+fn bar_mut(model: &mut BarModel, section: Section) -> &mut Vec<Tile> {
+    match section {
+        Section::Visible => &mut model.visible,
+        Section::Hidden => &mut model.hidden,
+        Section::AlwaysHidden => &mut model.always_hidden,
+    }
+}
+
+/// Whether two models put the same items in the same order in every
+/// section. Window bounds and titles are ignored.
+pub fn same_order(a: &BarModel, b: &BarModel) -> bool {
+    Section::ALL
+        .iter()
+        .all(|&section| a.ids(section) == b.ids(section))
+}
+
+/// Whether `read` has every item of `model`, in any section. A read made
+/// while the sections show or hide can miss the items that are still on
+/// their way, even when two reads in a row agree (v1.7).
+pub fn contains_all(read: &BarModel, model: &BarModel) -> bool {
+    Section::ALL
+        .iter()
+        .flat_map(|&section| model.ids(section))
+        .all(|id| read.find(id).is_some())
+}
+
+/// Whether the real menu bar agrees with the order the user dropped: every
+/// item in both models sits in the same section and in the same relative
+/// order. Items that appeared or went away meanwhile are ignored.
+pub fn orders_agree(actual: &BarModel, expected: &BarModel) -> bool {
+    Section::ALL.iter().all(|&section| {
+        let common = |model: &BarModel, other: &BarModel| -> Vec<WindowId> {
+            model
+                .ids(section)
+                .into_iter()
+                .filter(|id| other.find(*id).is_some())
+                .collect()
+        };
+        common(actual, expected) == common(expected, actual)
+    })
+}
+
 /// Whether a model rebuilt from the real menu bar shows `item` where
 /// `destination` asked for it: next to a tile on the requested side, or at
 /// the bar end that a divider or the icon stands for.
@@ -488,6 +556,116 @@ mod tests {
     }
 
     use Destination::{LeftOf, RightOf};
+
+    #[test]
+    fn apply_drop_moves_the_tile_where_it_was_dropped() {
+        let m = model();
+        // Within a bar: 312 to the end of the hidden bar.
+        let next = apply_drop(&m, 312, Section::Hidden, 2).unwrap();
+        assert_eq!(next.ids(Section::Hidden), vec![52, 68, 312]);
+        // Across bars: AirDrop into the always-hidden bar, first place.
+        let next = apply_drop(&m, 52, Section::AlwaysHidden, 0).unwrap();
+        assert_eq!(next.ids(Section::Hidden), vec![312, 68]);
+        assert_eq!(next.ids(Section::AlwaysHidden), vec![52, 214, 215]);
+        // The other bars are untouched.
+        assert_eq!(next.ids(Section::Visible), m.ids(Section::Visible));
+    }
+
+    #[test]
+    fn apply_drop_clamps_like_the_drop_rule() {
+        // Right of Clock and Control Center snaps to their left.
+        let m = model();
+        let next = apply_drop(&m, 446, Section::Visible, 99).unwrap();
+        assert_eq!(
+            next.ids(Section::Visible),
+            vec![7090, ICON, 8288, 446, 57, 54]
+        );
+    }
+
+    #[test]
+    fn apply_drop_agrees_with_the_destination_it_asks_for() {
+        let m = model();
+        for (item, section, index) in [
+            (312, Section::Hidden, 2),
+            (52, Section::AlwaysHidden, 0),
+            (215, Section::Visible, 0),
+            (68, Section::Hidden, 0),
+            (446, Section::Visible, 99),
+            (7090, Section::Hidden, 3),
+        ] {
+            let Ok(DropOutcome::Move(destination)) = drop_destination(&m, item, section, index)
+            else {
+                panic!("{item} to {section:?} {index} should move");
+            };
+            let next = apply_drop(&m, item, section, index).unwrap();
+            assert!(
+                model_matches(&next, item, destination),
+                "{item} to {section:?} {index}: {destination:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn apply_drop_refuses_what_the_drop_rule_refuses() {
+        let m = model();
+        // Locked, unknown, and a drop that changes nothing.
+        assert_eq!(apply_drop(&m, ICON, Section::Hidden, 0), None);
+        assert_eq!(apply_drop(&m, 999, Section::Hidden, 0), None);
+        assert_eq!(apply_drop(&m, 312, Section::Hidden, 0), None);
+    }
+
+    #[test]
+    fn same_order_compares_ids_per_section() {
+        let m = model();
+        assert!(same_order(&m, &m.clone()));
+        let mut moved_bounds = m.clone();
+        moved_bounds.hidden[0].bounds = Rect::new(1.0, 2.0, 3.0, 4.0);
+        assert!(same_order(&m, &moved_bounds));
+        let next = apply_drop(&m, 312, Section::Hidden, 2).unwrap();
+        assert!(!same_order(&m, &next));
+        // An empty bar that had items is a different order, which is what
+        // a read caught mid-transition looks like.
+        let mut emptied = m.clone();
+        emptied.always_hidden.clear();
+        assert!(!same_order(&m, &emptied));
+    }
+
+    #[test]
+    fn contains_all_spots_items_still_on_their_way() {
+        let m = model();
+        assert!(contains_all(&m, &m));
+        // Measured after a move: most always-hidden items were missing
+        // from two reads in a row while the menu bar settled.
+        let mut partial = m.clone();
+        partial.always_hidden.truncate(1);
+        assert!(!contains_all(&partial, &m));
+        assert!(contains_all(&m, &partial));
+        // A moved item counts wherever it is.
+        let next = apply_drop(&m, 312, Section::AlwaysHidden, 0).unwrap();
+        assert!(contains_all(&next, &m));
+    }
+
+    #[test]
+    fn orders_agree_ignores_items_that_came_or_went() {
+        let m = model();
+        let expected = apply_drop(&m, 312, Section::Hidden, 2).unwrap();
+        assert!(orders_agree(&expected, &expected));
+        // A new item appeared in the real menu bar meanwhile.
+        let mut actual = expected.clone();
+        actual.hidden.insert(1, tile(999, "New"));
+        assert!(orders_agree(&actual, &expected));
+        // An item went away.
+        let mut actual = expected.clone();
+        actual.visible.remove(0);
+        assert!(orders_agree(&actual, &expected));
+        // The moved item did not land: the old order.
+        assert!(!orders_agree(&m, &expected));
+        // An item in another section.
+        let mut actual = expected.clone();
+        let moved = actual.hidden.remove(0);
+        actual.always_hidden.push(moved);
+        assert!(!orders_agree(&actual, &expected));
+    }
 
     #[test]
     fn model_skips_dividers_and_locks_fixed_items() {
