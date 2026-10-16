@@ -258,8 +258,12 @@ place when shown, and back when hidden.
   divider: a plain length change, a length change inside
   `NSAnimationContext` with duration 0 and no implicit animation, and
   `isVisible` false and true instead of a length change. All three slid
-  the same way: MenuBarAgent animates its own layout. Reduce Motion was off
-  in the VM and not tried.
+  the same way: MenuBarAgent animates its own layout.
+- **Reduce Motion.** macOS 27's Accessibility > Display has no Reduce
+  motion switch (the search term still exists; Dim flashing lights is
+  there). Writing `reduceMotion` true to `com.apple.universalaccess` did
+  not change the slide when showing and hiding with ice-rust, so it is not
+  a workaround users could apply. The key was removed again.
 
 ## Design (v1.8, approach A)
 

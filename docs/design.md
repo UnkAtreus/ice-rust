@@ -1183,5 +1183,9 @@ showed no always-hidden items. The report that a click on the icon
 sometimes does nothing did not reproduce; the log now records each icon
 click.
 
-Not tested yet: a notched display, several displays, Option-click (the
-always-hidden section), Show on hover and scroll, a real user's menu bar.
+Hand test of 0.2.0 in the VM (2026-10-16, maintainer): everything listed
+as untested in the VM works, Option-click and Show on hover and scroll
+included.
+
+Not tested yet: a notched display, several displays, a real Mac on macOS
+27.
