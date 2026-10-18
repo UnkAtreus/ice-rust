@@ -9,11 +9,12 @@ use objc2_core_graphics::{
     CGGetOnlineDisplayList, CGMainDisplayID, CGRectMakeWithDictionaryRepresentation,
     CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullDirectDisplay, kCGNullWindowID,
     kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer, kCGWindowName, kCGWindowNumber,
-    kCGWindowOwnerName,
+    kCGWindowOwnerName, kCGWindowOwnerPID,
 };
 
 use crate::geometry::Display;
 use crate::model::{Rect, WindowRecord};
+use crate::rehide_policy::Window;
 
 type WindowInfo = CFDictionary<CFString, CFType>;
 
@@ -35,14 +36,34 @@ pub fn list_on_screen() -> Vec<WindowRecord> {
     list(CGWindowListOption::OptionOnScreenOnly)
 }
 
+/// On-screen windows front to back, with the layer, bounds and owner
+/// process smart rehide judges a click by (SPEC R12, D5). A window whose
+/// owner cannot be read is left out.
+pub fn list_on_screen_owners() -> Vec<Window> {
+    list_with(CGWindowListOption::OptionOnScreenOnly, |info| {
+        // SAFETY: an immutable CFString constant exported by CoreGraphics.
+        let owner = number(info, unsafe { kCGWindowOwnerPID })?.as_i32()?;
+        let record = parse(info)?;
+        Some(Window {
+            layer: record.layer,
+            bounds: record.bounds,
+            owner,
+        })
+    })
+}
+
 fn list(option: CGWindowListOption) -> Vec<WindowRecord> {
+    list_with(option, parse)
+}
+
+fn list_with<T>(option: CGWindowListOption, read: impl Fn(&WindowInfo) -> Option<T>) -> Vec<T> {
     let Some(array) = CGWindowListCopyWindowInfo(option, kCGNullWindowID) else {
         return Vec::new();
     };
     // SAFETY: CGWindowListCopyWindowInfo documents its result as an array of
     // CFDictionary values keyed by CFString.
     let array: CFRetained<CFArray<WindowInfo>> = unsafe { CFRetained::cast_unchecked(array) };
-    array.iter().filter_map(|info| parse(&info)).collect()
+    array.iter().filter_map(|info| read(&info)).collect()
 }
 
 fn number(info: &WindowInfo, key: &CFString) -> Option<CFRetained<CFNumber>> {

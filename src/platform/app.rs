@@ -56,6 +56,7 @@ use crate::model::{
     DIVIDER_MIN_WIDTH, REHIDE_TICK, Rect, WindowId, WindowRecord, is_menu_layer,
 };
 use crate::rehide::{Activity, Decision, Rehide};
+use crate::rehide_policy::timed_checks_enabled;
 use crate::sections::{MenuBarState, Section};
 use crate::settings::{self, KEY_CUSTOM_ICON_IMAGE, Settings};
 
@@ -63,11 +64,13 @@ mod agent;
 mod agent_layout;
 mod app_menus;
 mod hotkeys;
+mod rehide_policy;
 mod triggers;
 use agent::Agent;
 use agent_layout::AgentArrange;
 use app_menus::AppMenus;
 use hotkeys::HotkeyState;
+use rehide_policy::RehideWatch;
 use triggers::Triggers;
 
 /// Ignore a reopen request this soon after a click outside closed the bar,
@@ -294,6 +297,8 @@ struct Controller {
     triggers: Triggers,
     /// Hide application menus (v1.6).
     app_menus: AppMenus,
+    /// Smart and focused-app rehide.
+    rehide_watch: RehideWatch,
     /// MenuBarAgent draws the menu bar (macOS 27, v1.8).
     agent_menu_bar: bool,
     agent: Agent,
@@ -469,6 +474,7 @@ impl Controller {
                 outside_monitor: RefCell::new(None),
                 triggers: Triggers::default(),
                 app_menus: AppMenus::default(),
+                rehide_watch: RehideWatch::default(),
                 agent_menu_bar,
                 agent: Agent::default(),
                 agent_arrange: AgentArrange::default(),
@@ -508,6 +514,7 @@ impl Controller {
         self.observe_termination();
         self.observe_app_activation();
         self.install_triggers();
+        self.install_smart_rehide();
         self.install_hotkeys();
 
         // Keeps the About page's update status current while it is open.
@@ -530,6 +537,9 @@ impl Controller {
             if let Some(c) = me.upgrade() {
                 c.check_always_hidden_placement();
                 c.hide();
+                // After the hide, so the first delivery of the frontmost
+                // app has nothing left to hide.
+                c.observe_frontmost();
             }
         });
     }
@@ -696,6 +706,14 @@ impl Controller {
         let previous = self.settings.replace(next.clone());
         settings::save(next);
         self.rehide.borrow_mut().set_interval(next.rehide_interval);
+        if previous.rehide() != next.rehide() {
+            self.install_smart_rehide();
+        }
+        if previous.rehide_strategy != next.rehide_strategy {
+            // The Timed count did not run under another strategy, so a
+            // switch to Timed starts it now.
+            self.rehide.borrow_mut().reset(Instant::now());
+        }
         if previous.use_ice_bar != next.use_ice_bar {
             if next.use_ice_bar {
                 self.hide();
@@ -1203,13 +1221,17 @@ impl Controller {
         geometry::menu_bar_display(windows, &displays, icon.as_ref(), None, pointer)
     }
 
+    /// Whether the move engine or Menu Bar Layout holds the sections.
+    fn arranging(&self) -> bool {
+        self.mover.is_busy() || self.agent_arrange.is_moving() || self.agent_arrange.in_session()
+    }
+
     fn tick(&self) {
         // The move engine shows and restores sections on its own, and its
         // drag counts as activity, so the idle count starts after it.
         // While Menu Bar Layout shows every section on macOS 27, nothing
         // rehides either (v1.8).
-        if self.mover.is_busy() || self.agent_arrange.is_moving() || self.agent_arrange.in_session()
-        {
+        if self.arranging() {
             self.rehide.borrow_mut().reset(Instant::now());
             return;
         }
@@ -1217,7 +1239,8 @@ impl Controller {
         if self.status.is_hidden() && !bar_visible {
             return;
         }
-        if !self.settings.borrow().auto_rehide {
+        // Only the Timed strategy runs interval checks (SPEC T1).
+        if !timed_checks_enabled(self.settings.borrow().rehide()) {
             return;
         }
         let on_screen = windows::list_on_screen();

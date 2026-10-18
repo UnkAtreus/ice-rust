@@ -57,9 +57,19 @@ on: macOS 26.3 on Apple Silicon, with four displays.
   Option-click opens it with the always-hidden items. Clicking an image
   closes the panel, reveals that item's section, waits until the item is on
   screen (polling every 20 ms for up to 1 s), and clicks the real item.
-- A revealed section hides again after the rehide interval (15 s by default)
-  with the pointer outside the menu bar, no pop-up menu on screen, and no
-  panel open. Rehide hides both sections.
+- Revealed sections hide again by one of three strategies, as in Ice
+  (rebuilt from [the clean-room spec](clean-room/smart-rehide/SPEC.md)).
+  Smart: 250 ms after a left click outside the menu bar, everything hides
+  when the active Space changed, or when the window under the pointer is a
+  normal window of the active regular app or a Dock window; a menu or
+  panel under the pointer keeps the items. Timed: everything hides after
+  the rehide interval (15 s by default) with the pointer outside the menu
+  bar, no pop-up menu on screen, and no panel open. Focused app: 0.1 s
+  after another app comes to the front, the hidden section hides, which
+  hides everything, unless the pointer is in the menu bar or the new app
+  is ice-rust itself or the app ice-rust hands focus back to. Clicks that
+  ice-rust posts never trigger Smart, and nothing rehides while a move or
+  Menu Bar Layout holds the sections.
 - The Settings window has a General page, a Menu Bar Layout page with drag
   and drop, a Permissions page and an About page (see
   [Settings window](#settings-window)).
@@ -73,7 +83,8 @@ on: macOS 26.3 on Apple Silicon, with four displays.
 
 The logic lives in pure modules with unit tests and no macOS dependencies:
 `model`, `geometry`, `chain`, `sections`, `arrange`, `bar_layout`,
-`bar_scroll`, `rehide`, `input_tag`, `worker`, `image_check`, `brand` (the
+`bar_scroll`, `rehide`, `rehide_policy` (smart and focused-app rehide,
+API in `docs/clean-room/smart-rehide/API.md`), `input_tag`, `worker`, `image_check`, `brand` (the
 embedded artwork), `menu_icon` (the icon styles), `triggers` (show on
 click, hover and scroll), `app_menus` (hide application menus), and the
 defaults half of `settings`. The macOS glue is under `src/platform/` and
@@ -227,8 +238,10 @@ bars stretch.
   for updates (v1.3). Changes are saved and applied at once.
 - Hidden Items (v1.5): Use Ice Bar, Hide app menus (v1.6, enabled while
   Use Ice Bar is off), Show on click, Show on hover, Hover delay
-  (0 to 1 s in tenths), Show on scroll, Automatically rehide and Rehide after
-  (5 to 60 s), and a note on clicking the icon or empty menu bar space. See
+  (0 to 1 s in tenths), Show on scroll, Automatically rehide with its
+  Strategy picker (shown while the switch is on, with a line describing
+  the strategy), Rehide after (5 to 60 s, shown only for Timed), and a
+  note on clicking the icon or empty menu bar space. See
   [Show on click, hover and scroll](#show-on-click-hover-and-scroll-v15).
   Changes are saved and applied at once; the event monitors follow the
   switches.
@@ -588,6 +601,7 @@ Stored in the process's standard user defaults:
 | `UseIceBar` | true | Toggle opens the Ice Bar instead of revealing the section |
 | `AutoRehide` | true | Hide a revealed section after the idle interval |
 | `RehideInterval` | 15 | Idle seconds before hiding (0 to 3600 stored; the Settings window offers 5 to 60) |
+| `RehideStrategy` | 0 | 0 Smart, 1 Timed, 2 Focused app; another value means Smart. While absent, an install with `AutoRehide` or `RehideInterval` stored uses Timed |
 | `AlwaysHiddenPlacementV2` | absent | Set once the v1.2 always-hidden placement migration has run (see below) |
 | `AutomaticallyCheckForUpdates` | true | Daily update checks (v1.3) |
 | `IconStyle` | `ice` | Icon style (v1.4): `ice`, `dot`, `ellipsis`, `ellipsis-circle`, `chevron`, `arrow`, `eye`, `door`, `sunglasses`, `snowflake`, `grid`, `star` or `custom`; an unknown value means `ice` |
@@ -771,9 +785,13 @@ window per display (`crate::agent_bar`, `platform/app/agent.rs`, research in
 
 ## Limitations and differences from Ice
 
-- Out of scope: global hotkeys, menu bar appearance, search, and Ice's
-  smart and focused-app rehide strategies. The Settings window has no
-  Hotkeys, Appearance or Updates pages.
+- Out of scope: global hotkeys, menu bar appearance and search. The
+  Settings window has no Hotkeys, Appearance or Updates pages.
+- Smart and focused-app rehide follow Ice with the changes in the spec's
+  Part B: the clicked window is chosen without window titles, so Screen
+  Recording is not needed; Focused app needs Automatically rehide; and
+  the menu bar test uses the display under the pointer. They are not yet
+  checked on macOS 27 (spec D10).
 - Show on click and Show on hover need Accessibility to find where the app
   menus end, act only on the menu bar of the display with the ice-rust icon,
   and do nothing while ice-rust itself is in front. Show on scroll is

@@ -271,6 +271,14 @@ impl StatusItems {
             .any(|window| window.windowNumber() == number)
     }
 
+    /// Whether window number `number` is the icon's window.
+    pub fn is_icon_window(&self, number: isize) -> bool {
+        self.icon
+            .button(self.mtm)
+            .and_then(|button| button.window())
+            .is_some_and(|window| window.windowNumber() == number)
+    }
+
     /// Gives the spacer something to grab (on) or makes it a blank 16 pt
     /// slot again (off). A Command-drag does not move an untitled item of
     /// length 0 (macOS 27, v1.8).

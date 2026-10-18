@@ -43,6 +43,7 @@ use crate::hotkeys::HotkeyAction;
 use crate::login_item as login;
 use crate::menu_icon::IconStyle;
 use crate::model::{LAYOUT_REFRESH, PERMISSIONS_REFRESH, WindowId};
+use crate::rehide_policy::{RehideSettings, RehideStrategy, rehide_controls};
 use crate::sections::Section;
 use crate::settings::{Settings, UI_REHIDE_MAX_SECONDS, UI_REHIDE_MIN_SECONDS, ui_rehide_seconds};
 use crate::triggers::MAX_HOVER_DELAY;
@@ -53,6 +54,10 @@ const SIDEBAR_WIDTH: f64 = 216.0;
 /// Height of the title bar area that holds the page title.
 const HEADER_HEIGHT: f64 = 44.0;
 pub(super) const MARGIN: f64 = 24.0;
+/// Height of a settings row on the General and Hidden Items pages.
+const ROW: f64 = 56.0;
+/// Space between the rehide group and the note under it.
+const NOTE_GAP: f64 = 14.0;
 /// After the last move, the order is read this often until two reads in a
 /// row agree (v1.7): showing and hiding the sections moves the status
 /// item windows asynchronously, and a read in the middle shows bars that
@@ -66,6 +71,9 @@ const CONFIRM_MISSING: Duration = Duration::from_secs(1);
 
 /// The Custom image row's note while nothing went wrong.
 const CUSTOM_NOTE: &str = "Used by Custom Image";
+/// The Automatically rehide row's detail line while the switch is off. With
+/// the switch on it describes the selected strategy (SPEC S3).
+const AUTO_REHIDE_NOTE: &str = "Hide shown items again on their own";
 
 const SCREEN_RECORDING_PANE: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
@@ -280,8 +288,18 @@ struct GeneralParts {
     hover_delay_value: Retained<NSTextField>,
     show_on_scroll: Retained<NSSwitch>,
     auto_rehide: Retained<NSSwitch>,
+    /// The detail line of the Automatically rehide row.
+    rehide_note: Retained<NSTextField>,
+    /// The Strategy picker (SPEC D9).
+    strategy: Retained<NSPopUpButton>,
+    /// The group with Automatically rehide and the interval row; it grows
+    /// and shrinks with the interval row.
+    rehide_group: Retained<RoundedBox>,
+    interval_row: Retained<FlippedView>,
     interval: Retained<NSSlider>,
     interval_value: Retained<NSTextField>,
+    /// The note under the rehide group.
+    hidden_note: Retained<NSTextField>,
     login: Retained<NSSwitch>,
     login_note: Retained<NSTextField>,
     login_button: Retained<NSButton>,
@@ -676,12 +694,17 @@ impl SettingsWindow {
         self.general
             .auto_rehide
             .setState(switch_state(s.auto_rehide));
+        let index = RehideStrategy::ALL
+            .iter()
+            .position(|&strategy| strategy == s.rehide_strategy)
+            .unwrap_or(0);
+        self.general.strategy.selectItemAtIndex(index as isize);
         let seconds = ui_rehide_seconds(s.rehide_interval);
         self.general.interval.setDoubleValue(seconds);
         self.general
             .interval_value
             .setStringValue(&NSString::from_str(&seconds_text(seconds)));
-        self.general.interval.setEnabled(s.auto_rehide);
+        self.layout_rehide(s.rehide());
         self.general
             .hide_app_menus
             .setState(switch_state(s.hide_app_menus && !agent));
@@ -746,6 +769,35 @@ impl SettingsWindow {
             NSColor::secondaryLabelColor()
         };
         note.setTextColor(Some(&color));
+    }
+
+    fn selected_strategy(&self) -> RehideStrategy {
+        usize::try_from(self.general.strategy.indexOfSelectedItem())
+            .ok()
+            .and_then(|i| RehideStrategy::ALL.get(i).copied())
+            .unwrap_or_default()
+    }
+
+    /// Shows the rehide controls SPEC S3 asks for: the Strategy picker and
+    /// its description while the switch is on, the interval row only for
+    /// Timed. The group and the note under it follow the row count.
+    fn layout_rehide(&self, settings: RehideSettings) {
+        let controls = rehide_controls(settings);
+        let g = &self.general;
+        g.strategy.setHidden(!controls.strategy_picker);
+        let note = if controls.strategy_picker {
+            settings.strategy.description()
+        } else {
+            AUTO_REHIDE_NOTE
+        };
+        g.rehide_note.setStringValue(&NSString::from_str(note));
+        g.interval_row.setHidden(!controls.interval);
+        let mut group = g.rehide_group.frame();
+        group.size.height = if controls.interval { 2.0 * ROW } else { ROW };
+        g.rehide_group.setFrame(group);
+        let mut below = g.hidden_note.frame();
+        below.origin.y = group.origin.y + group.size.height + NOTE_GAP;
+        g.hidden_note.setFrame(below);
     }
 
     fn selected_style(&self) -> IconStyle {
@@ -886,6 +938,7 @@ impl SettingsWindow {
             .setStringValue(&NSString::from_str(&tenths_text(delay)));
         self.general.hover_delay.setEnabled(s.show_on_hover);
         s.auto_rehide = self.general.auto_rehide.state() == NSControlStateValueOn;
+        s.rehide_strategy = self.selected_strategy();
         s.auto_check_updates = self.general.auto_updates.state() == NSControlStateValueOn;
         s.icon_style = self.selected_style();
         s.tint_custom_icon = self.general.custom_tint.state() == NSControlStateValueOn;
@@ -904,7 +957,7 @@ impl SettingsWindow {
         self.general
             .interval_value
             .setStringValue(&NSString::from_str(&seconds_text(seconds)));
-        self.general.interval.setEnabled(s.auto_rehide);
+        self.layout_rehide(s.rehide());
         self.general
             .custom_tint
             .setEnabled(s.icon_style == IconStyle::Custom);
@@ -1335,7 +1388,6 @@ fn build_general(
     me: &Weak<SettingsWindow>,
     targets: &mut Vec<Retained<ActionTarget>>,
 ) -> GeneralParts {
-    const ROW: f64 = 56.0;
     let text_width = width - 100.0;
     let changed = |slider_moved: bool| {
         let me = me.clone();
@@ -1492,35 +1544,65 @@ fn build_general(
         settings.show_on_scroll,
     );
 
-    // Hidden Items: rehide.
+    // Hidden Items: rehide. The Strategy picker joins the switch's row and
+    // its detail line describes the selected strategy (SPEC S3, D9); the
+    // interval row shows only for Timed. `SettingsWindow::layout_rehide`
+    // sizes the group.
     let top = 8.0 + 6.0 * ROW + 16.0;
     let rehide = RoundedBox::new(mtm, rect(MARGIN, top, width, 2.0 * ROW), BoxStyle::Group);
     add(hidden_page, &rehide, Follow::Width);
-    let auto_rehide = switch_row(
-        mtm,
+    let picker_width = 128.0;
+    let note_width = width - 16.0 - (58.0 + 8.0 + picker_width) - 12.0;
+    add(
         &rehide,
-        (
+        &label(
+            mtm,
             "Automatically rehide",
-            "Hide shown items again while the pointer is away from the menu bar",
+            rect(16.0, 11.0, note_width, 17.0),
+            13.0,
+            Weight::Medium,
+            &NSColor::labelColor(),
         ),
-        0.0,
-        width,
-        settings.auto_rehide,
+        Follow::Width,
     );
-    separator(mtm, &rehide, ROW, width);
+    let rehide_note = label(
+        mtm,
+        AUTO_REHIDE_NOTE,
+        rect(16.0, 30.0, note_width, 15.0),
+        11.0,
+        Weight::Regular,
+        &NSColor::secondaryLabelColor(),
+    );
+    add(&rehide, &rehide_note, Follow::Width);
+    let strategy = NSPopUpButton::initWithFrame_pullsDown(
+        NSPopUpButton::alloc(mtm),
+        rect(width - 66.0 - picker_width, 15.0, picker_width, 26.0),
+        false,
+    );
+    for choice in RehideStrategy::ALL {
+        strategy.addItemWithTitle(&NSString::from_str(choice.label()));
+    }
+    strategy.setToolTip(Some(&NSString::from_str("Strategy")));
+    add(&rehide, &strategy, Follow::Right);
+    let auto_rehide =
+        NSSwitch::initWithFrame(NSSwitch::alloc(mtm), rect(width - 58.0, 16.0, 42.0, 24.0));
+    auto_rehide.setState(switch_state(settings.auto_rehide));
+    add(&rehide, &auto_rehide, Follow::Right);
+    let interval_row = FlippedView::new(mtm, rect(0.0, ROW, width, ROW));
+    add(&rehide, &interval_row, Follow::Width);
+    separator(mtm, &interval_row, 0.0, width);
     let seconds = ui_rehide_seconds(settings.rehide_interval);
     let (interval, interval_value) = slider_row(
         mtm,
-        &rehide,
+        &interval_row,
         ("Rehide after", "Idle time before shown items hide again"),
-        ROW,
+        0.0,
         width,
         (seconds, UI_REHIDE_MIN_SECONDS, UI_REHIDE_MAX_SECONDS),
         &seconds_text(seconds),
     );
-    interval.setEnabled(settings.auto_rehide);
 
-    let controls: [(&NSControl, bool); 10] = [
+    let controls: [(&NSControl, bool); 11] = [
         (&use_bar, false),
         (&hide_app_menus, false),
         (&show_on_click, false),
@@ -1528,6 +1610,7 @@ fn build_general(
         (&hover_delay, false),
         (&show_on_scroll, false),
         (&auto_rehide, false),
+        (&strategy, false),
         (&interval, true),
         (&auto_updates, false),
         (&custom_tint, false),
@@ -1549,20 +1632,17 @@ fn build_general(
     target.attach(&login_button);
     targets.push(target);
 
-    add(
-        hidden_page,
-        &wrapping_label(
-            mtm,
-            "Click the ice-rust icon or an empty part of the menu bar to show hidden items; \
-             Option-click either to show the always-hidden items too. Right-click or \
-             Control-click the icon for the menu. Show on click and Show on hover need \
-             Accessibility to tell empty space from the app's menus.",
-            rect(MARGIN + 4.0, top + 2.0 * ROW + 14.0, width - 8.0, 52.0),
-            11.0,
-            &NSColor::secondaryLabelColor(),
-        ),
-        Follow::Width,
+    let hidden_note = wrapping_label(
+        mtm,
+        "Click the ice-rust icon or an empty part of the menu bar to show hidden items; \
+         Option-click either to show the always-hidden items too. Right-click or \
+         Control-click the icon for the menu. Show on click and Show on hover need \
+         Accessibility to tell empty space from the app's menus.",
+        rect(MARGIN + 4.0, top + 2.0 * ROW + NOTE_GAP, width - 8.0, 52.0),
+        11.0,
+        &NSColor::secondaryLabelColor(),
     );
+    add(hidden_page, &hidden_note, Follow::Width);
 
     GeneralParts {
         icon_style,
@@ -1576,8 +1656,13 @@ fn build_general(
         hover_delay_value,
         show_on_scroll,
         auto_rehide,
+        rehide_note,
+        strategy,
+        rehide_group: rehide,
+        interval_row,
         interval,
         interval_value,
+        hidden_note,
         login,
         login_note,
         login_button,

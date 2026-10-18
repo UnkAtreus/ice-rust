@@ -207,6 +207,11 @@ impl IceBar {
         self.panel.isVisible()
     }
 
+    /// Whether window number `number` is the panel's.
+    pub fn owns_window(&self, number: isize) -> bool {
+        number > 0 && self.panel.windowNumber() == number
+    }
+
     /// The panel's frame in AppKit space while it is visible.
     pub fn frame(&self) -> Option<Rect> {
         if !self.panel.isVisible() {

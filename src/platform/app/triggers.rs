@@ -72,7 +72,7 @@ fn modifiers(flags: NSEventModifierFlags) -> Modifiers {
 }
 
 /// Whether `pointer` is near the top of a display, where a menu bar can be.
-fn near_menu_bar(pointer: (f64, f64)) -> bool {
+pub(super) fn near_menu_bar(pointer: (f64, f64)) -> bool {
     let (x, y) = pointer;
     windows::displays()
         .iter()
@@ -120,7 +120,7 @@ impl Controller {
     /// monitor: the global one sees events sent to other apps, the local
     /// one events sent to ice-rust, such as a click in the menu bar while
     /// Settings is in front.
-    fn monitor(
+    pub(super) fn monitor(
         &self,
         mask: NSEventMask,
         handle: fn(&Controller, &NSEvent),
@@ -158,7 +158,7 @@ impl Controller {
     }
 
     /// Our own synthetic clicks and drags must not trigger anything.
-    fn input_busy(&self) -> bool {
+    pub(super) fn input_busy(&self) -> bool {
         self.mover.is_busy() || self.agent_arrange.is_moving() || events::is_posting()
     }
 

@@ -6,11 +6,14 @@ use std::time::Duration;
 use crate::hotkeys::Hotkeys;
 use crate::menu_icon::IconStyle;
 use crate::model::REHIDE_INTERVAL;
+use crate::rehide_policy::{RehideSettings, RehideStrategy, stored_strategy};
 use crate::triggers::{HOVER_DELAY, MAX_HOVER_DELAY};
 
 pub const KEY_USE_ICE_BAR: &str = "UseIceBar";
 pub const KEY_AUTO_REHIDE: &str = "AutoRehide";
 pub const KEY_REHIDE_INTERVAL: &str = "RehideInterval";
+/// Ice's key for the rehide strategy, an integer (SPEC S2, D8).
+pub const KEY_REHIDE_STRATEGY: &str = "RehideStrategy";
 pub const KEY_AUTO_CHECK_UPDATES: &str = "AutomaticallyCheckForUpdates";
 pub const KEY_ICON_STYLE: &str = "IconStyle";
 /// Ice's key names for the menu bar triggers (v1.5).
@@ -81,6 +84,8 @@ pub struct Settings {
     pub use_ice_bar: bool,
     pub auto_rehide: bool,
     pub rehide_interval: Duration,
+    /// How revealed items hide again (smart rehide SPEC S1, D1).
+    pub rehide_strategy: RehideStrategy,
     /// Check GitHub for a new version once a day (v1.3).
     pub auto_check_updates: bool,
     /// Look of the icon (v1.4).
@@ -107,6 +112,8 @@ impl Default for Settings {
             use_ice_bar: true,
             auto_rehide: true,
             rehide_interval: REHIDE_INTERVAL,
+            // A fresh install; `from_lookup` keeps Timed for earlier ones.
+            rehide_strategy: RehideStrategy::Smart,
             auto_check_updates: true,
             icon_style: IconStyle::default(),
             tint_custom_icon: true,
@@ -134,10 +141,20 @@ impl Settings {
             .filter(|s| s.is_finite() && (0.0..=MAX_REHIDE_SECONDS).contains(s))
             .map(Duration::from_secs_f64)
             .unwrap_or(defaults.rehide_interval);
+        // An integer stored as a number; a fraction is not a strategy.
+        let strategy = get_f64(KEY_REHIDE_STRATEGY)
+            .filter(|n| n.is_finite() && n.fract() == 0.0)
+            .map(|n| n as i64);
+        let rehide_strategy = stored_strategy(
+            strategy,
+            get_bool(KEY_AUTO_REHIDE).is_some(),
+            get_f64(KEY_REHIDE_INTERVAL).is_some(),
+        );
         Self {
             use_ice_bar: get_bool(KEY_USE_ICE_BAR).unwrap_or(defaults.use_ice_bar),
             auto_rehide: get_bool(KEY_AUTO_REHIDE).unwrap_or(defaults.auto_rehide),
             rehide_interval,
+            rehide_strategy,
             auto_check_updates: get_bool(KEY_AUTO_CHECK_UPDATES)
                 .unwrap_or(defaults.auto_check_updates),
             icon_style: get_string(KEY_ICON_STYLE)
@@ -155,6 +172,14 @@ impl Settings {
             hotkeys: get_string(KEY_HOTKEYS)
                 .map(|text| Hotkeys::decode(&text))
                 .unwrap_or(defaults.hotkeys),
+        }
+    }
+
+    /// The settings the rehide decisions read.
+    pub fn rehide(&self) -> RehideSettings {
+        RehideSettings {
+            auto_rehide: self.auto_rehide,
+            strategy: self.rehide_strategy,
         }
     }
 }
@@ -262,8 +287,9 @@ mod store {
 
     use super::{
         KEY_AUTO_CHECK_UPDATES, KEY_AUTO_REHIDE, KEY_HIDE_APP_MENUS, KEY_HOTKEYS, KEY_ICON_STYLE,
-        KEY_REHIDE_INTERVAL, KEY_SHOW_ON_CLICK, KEY_SHOW_ON_HOVER, KEY_SHOW_ON_HOVER_DELAY,
-        KEY_SHOW_ON_SCROLL, KEY_TINT_CUSTOM_ICON, KEY_USE_ICE_BAR, SeedValue, Settings,
+        KEY_REHIDE_INTERVAL, KEY_REHIDE_STRATEGY, KEY_SHOW_ON_CLICK, KEY_SHOW_ON_HOVER,
+        KEY_SHOW_ON_HOVER_DELAY, KEY_SHOW_ON_SCROLL, KEY_TINT_CUSTOM_ICON, KEY_USE_ICE_BAR,
+        SeedValue, Settings,
     };
 
     fn has_key(defaults: &NSUserDefaults, key: &str) -> bool {
@@ -292,6 +318,10 @@ mod store {
         defaults.setDouble_forKey(
             settings.rehide_interval.as_secs_f64(),
             &NSString::from_str(KEY_REHIDE_INTERVAL),
+        );
+        defaults.setInteger_forKey(
+            settings.rehide_strategy.raw() as isize,
+            &NSString::from_str(KEY_REHIDE_STRATEGY),
         );
         defaults.setBool_forKey(
             settings.auto_check_updates,
@@ -418,6 +448,35 @@ mod tests {
         assert!(!s.use_ice_bar);
         assert!(!s.auto_rehide);
         assert_eq!(s.rehide_interval, Duration::from_secs_f64(7.5));
+    }
+
+    #[test]
+    fn rehide_strategy_is_read_from_its_key() {
+        assert_eq!(KEY_REHIDE_STRATEGY, "RehideStrategy");
+        assert_eq!(Settings::default().rehide_strategy, RehideStrategy::Smart);
+        let nums: HashMap<&str, f64> = [(KEY_REHIDE_STRATEGY, 2.0)].into();
+        let s = Settings::from_lookup(|_| None, |k| nums.get(k).copied(), |_| None);
+        assert_eq!(s.rehide_strategy, RehideStrategy::FocusedApp);
+        // A fraction is not an integer and leaves the default.
+        let nums: HashMap<&str, f64> = [(KEY_REHIDE_STRATEGY, 1.5)].into();
+        let s = Settings::from_lookup(|_| None, |k| nums.get(k).copied(), |_| None);
+        assert_eq!(s.rehide_strategy, RehideStrategy::Smart);
+    }
+
+    #[test]
+    fn earlier_installs_keep_timed_rehide() {
+        // An install that ran without the strategy key has its other
+        // rehide keys stored (D1).
+        let bools: HashMap<&str, bool> = [(KEY_AUTO_REHIDE, true)].into();
+        let s = Settings::from_lookup(|k| bools.get(k).copied(), |_| None, |_| None);
+        assert_eq!(s.rehide_strategy, RehideStrategy::Timed);
+        let nums: HashMap<&str, f64> = [(KEY_REHIDE_INTERVAL, 15.0)].into();
+        let s = Settings::from_lookup(|_| None, |k| nums.get(k).copied(), |_| None);
+        assert_eq!(s.rehide_strategy, RehideStrategy::Timed);
+        assert_eq!(
+            Settings::from_lookup(|_| None, |_| None, |_| None).rehide_strategy,
+            RehideStrategy::Smart
+        );
     }
 
     #[test]
