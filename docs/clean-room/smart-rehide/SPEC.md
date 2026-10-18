@@ -545,7 +545,7 @@ compared by its window list only, with no input.
 | A click right after a desktop click | macOS 27 moves the windows aside on a desktop click, and the next click only brings them back: it did not activate the app under it, so that check gave no change. Ice's rule gives the same, since the app is not active 250 ms later. |
 | R11: a click on the active TextEdit, then the pointer moved onto a Notification Center widget 30 ms later | The check read the pointer at the widget after the wait (hit test: Notification Center) and made no change. The same click without the move hid. |
 | R10: Space switches with Control-Left and Control-Right (a full-screen TextEdit made the second Space) | The active Space ID changed 545 to 570 ms after the key, at the end of the animation, and a click sent during the animation reached no event monitor. A click 30 ms before the switch was checked while the Space ID was still the old one, so R10 did not fire. Setting Reduce Motion with `defaults` and restarting the Dock did not shorten the switch. No input in the VM made R10 fire; its rule is covered by the spec tests only. |
-| D6: a drag in Menu Bar Layout | The three clicks that ice-rust posted to move the item were each recognized as its own and dropped. They were in the menu bar, so D4 would have dropped them as well. The drag's own mouse-down in Settings led to a hide that was skipped because a move held the sections. |
+| D6: a drag in Menu Bar Layout | The three clicks that ice-rust posted to move the item were each recognized as its own and dropped. They were in the menu bar, so D4 would have dropped them as well. The drag's own mouse-down in Settings led to a hide that was skipped because a move held the sections. ice-rust posts no clicks outside the menu bar, so a test helper posted one there carrying the same kind of tag: a click on the active TextEdit with the tag was dropped as ice-rust's own and the items stayed shown, and the same click without the tag hid them. |
 | Who owns a menu window | The app whose menu it is: Finder's Go menu (layer 101) belonged to Finder, and the Apple menu's window belonged to the frontmost app (Calendar), the same process the hit test returned. |
 | Accessibility hit test | A TextEdit text area: TextEdit (`AXTextArea`). The desktop: Finder (`AXGroup`). Dock icons: Dock (`AXDockItem`). A Notification Center widget: Notification Center. The menu bar: the frontmost app's `AXMenuBar`. Each is the app that takes the click. |
 
@@ -553,8 +553,7 @@ On macOS 26.7.1 the owner tried Smart and Focused app by hand with
 ice-rust 0.2.2 (2026-10-18) and both worked; there is no log of those
 runs.
 
-Not covered: R10 firing on a real Space change (see above) and a posted
-click outside the menu bar for D6.
+Not covered: R10 firing on a real Space change (see above).
 
 ### Testable boundary
 
