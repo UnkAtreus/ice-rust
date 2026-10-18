@@ -549,8 +549,11 @@ compared by its window list only, with no input.
 | Who owns a menu window | The app whose menu it is: Finder's Go menu (layer 101) belonged to Finder, and the Apple menu's window belonged to the frontmost app (Calendar), the same process the hit test returned. |
 | Accessibility hit test | A TextEdit text area: TextEdit (`AXTextArea`). The desktop: Finder (`AXGroup`). Dock icons: Dock (`AXDockItem`). A Notification Center widget: Notification Center. The menu bar: the frontmost app's `AXMenuBar`. Each is the app that takes the click. |
 
+On macOS 26.7.1 the owner tried Smart by hand with ice-rust 0.2.2
+(2026-10-18) and it worked; there is no log of that run.
+
 Not covered: R10 firing on a real Space change (see above), a posted
-click outside the menu bar for D6, and any run with input on macOS 26.
+click outside the menu bar for D6, and Focused app on macOS 26.
 
 ### Testable boundary
 
