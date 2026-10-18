@@ -485,6 +485,7 @@ The README screenshots were made this way:
 cargo build --release
 ./target/release/ice-rust render-settings --page about --out docs/images/about.png
 ./target/release/ice-rust render-settings --page general --default-settings --out docs/images/general.png
+./target/release/ice-rust render-settings --page hidden-items --default-settings --out docs/images/hidden-items.png
 ```
 
 ## Show on click, hover and scroll (v1.5)
