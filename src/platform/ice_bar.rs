@@ -15,7 +15,9 @@ use objc2_app_kit::{
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSDictionary, NSObject, NSPoint, NSRect, NSString};
 
+use super::ui::srgb;
 use crate::bar_layout::{BarLayout, is_click, overflow_label};
+use crate::image_check::prefers_dark_text;
 use crate::model::{PANEL_COLLECTION_BEHAVIOR, PANEL_LEVEL, PANEL_STYLE_MASK, Rect, WindowId};
 
 /// Called with the window id of the clicked item.
@@ -35,6 +37,33 @@ fn ns_rect(r: &Rect) -> NSRect {
     CGRect::new(CGPoint::new(r.x, r.y), CGSize::new(r.width, r.height))
 }
 
+/// The bar fill, the placeholder tile fill and the placeholder text. The
+/// fill is the one `brand::bar_fill_for` picks to contrast with the item
+/// images captured from the menu bar: white text over a dark desktop
+/// picture stayed white on the window background of light mode (issue #3).
+/// Without a fill (a message tile), the window colors.
+fn bar_colors(
+    bar_color: Option<[f64; 3]>,
+) -> (Retained<NSColor>, Retained<NSColor>, Retained<NSColor>) {
+    match bar_color {
+        Some(color) if prefers_dark_text(color) => (
+            srgb(color, 1.0),
+            NSColor::blackColor().colorWithAlphaComponent(0.1),
+            NSColor::blackColor().colorWithAlphaComponent(0.7),
+        ),
+        Some(color) => (
+            srgb(color, 1.0),
+            NSColor::whiteColor().colorWithAlphaComponent(0.15),
+            NSColor::whiteColor().colorWithAlphaComponent(0.8),
+        ),
+        None => (
+            NSColor::windowBackgroundColor(),
+            NSColor::quaternaryLabelColor(),
+            NSColor::labelColor(),
+        ),
+    }
+}
+
 pub struct ItemIvars {
     id: WindowId,
     title: String,
@@ -42,6 +71,7 @@ pub struct ItemIvars {
     clickable: bool,
     pressed: Cell<Option<(f64, NSPoint)>>,
     on_click: ClickHandler,
+    bar_color: Option<[f64; 3]>,
 }
 
 define_class!(
@@ -97,6 +127,7 @@ impl ItemView {
         frame: NSRect,
         item: &BarItem,
         on_click: ClickHandler,
+        bar_color: Option<[f64; 3]>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ItemIvars {
             id: item.id,
@@ -105,6 +136,7 @@ impl ItemView {
             clickable: item.clickable,
             pressed: Cell::new(None),
             on_click,
+            bar_color,
         });
         // SAFETY: initWithFrame: is NSView's designated initializer.
         unsafe { msg_send![super(this), initWithFrame: frame] }
@@ -118,11 +150,11 @@ impl ItemView {
                 (bounds.size.height - 6.0).max(0.0),
             ),
         );
-        NSColor::quaternaryLabelColor().setFill();
+        let (_, fill, color) = bar_colors(self.ivars().bar_color);
+        fill.setFill();
         NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(tile, 4.0, 4.0).fill();
 
         let font = NSFont::systemFontOfSize(9.0);
-        let color = NSColor::labelColor();
         // SAFETY: both keys are immutable NSString constants exported by AppKit.
         let (font_key, color_key) =
             unsafe { (NSFontAttributeName, NSForegroundColorAttributeName) };
@@ -147,6 +179,7 @@ define_class!(
     // designated initializer, which `BarView::new` does. No Drop impl.
     #[unsafe(super(NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
+    #[ivars = Option<[f64; 3]>]
     pub struct BarView;
 
     // SAFETY: argument and return types match NSView's declarations:
@@ -161,15 +194,15 @@ define_class!(
         fn draw_rect(&self, _dirty: NSRect) {
             let bounds = self.bounds();
             let radius = bounds.size.height / 4.0;
-            NSColor::windowBackgroundColor().setFill();
+            bar_colors(*self.ivars()).0.setFill();
             NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(bounds, radius, radius).fill();
         }
     }
 );
 
 impl BarView {
-    fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(());
+    fn new(mtm: MainThreadMarker, frame: NSRect, bar_color: Option<[f64; 3]>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(bar_color);
         // SAFETY: initWithFrame: is NSView's designated initializer.
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
@@ -227,17 +260,20 @@ impl IceBar {
     }
 
     /// Fills the panel and orders it front without activating the app.
-    /// `frame` is in AppKit space; slot frames are panel-local.
+    /// `frame` is in AppKit space; slot frames are panel-local. `bar_color`
+    /// is the bar fill, if any (see `bar_colors`).
     pub fn show(
         &self,
         frame: &Rect,
         layout: &BarLayout,
         items: &[BarItem],
         on_click: &ClickHandler,
+        bar_color: Option<[f64; 3]>,
     ) {
         let content = BarView::new(
             self.mtm,
             ns_rect(&Rect::new(0.0, 0.0, frame.width, frame.height)),
+            bar_color,
         );
         if let Some(tile) = &layout.overflow {
             let item = BarItem {
@@ -246,7 +282,7 @@ impl IceBar {
                 image: None,
                 clickable: false,
             };
-            let view = ItemView::new(self.mtm, ns_rect(tile), &item, on_click.clone());
+            let view = ItemView::new(self.mtm, ns_rect(tile), &item, on_click.clone(), bar_color);
             let what = if layout.dropped == 1 {
                 "item does"
             } else {
@@ -263,7 +299,13 @@ impl IceBar {
             let Some(item) = items.get(slot.index) else {
                 continue;
             };
-            let view = ItemView::new(self.mtm, ns_rect(&slot.frame), item, on_click.clone());
+            let view = ItemView::new(
+                self.mtm,
+                ns_rect(&slot.frame),
+                item,
+                on_click.clone(),
+                bar_color,
+            );
             view.setToolTip(Some(&NSString::from_str(&item.title)));
             content.addSubview(&view);
         }

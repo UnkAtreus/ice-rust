@@ -23,22 +23,19 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSBezierPath,
-    NSBorderType, NSColor, NSCompositingOperation, NSEvent, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSImage, NSLineBreakMode, NSMutableParagraphStyle,
-    NSParagraphStyleAttributeName, NSResponder, NSScrollElasticity, NSScrollView,
-    NSScrollerKnobStyle, NSScrollerStyle, NSStringDrawing, NSToolTipTag, NSView,
+    NSAppearanceCustomization, NSBezierPath, NSBorderType, NSColor, NSCompositingOperation,
+    NSEvent, NSFont, NSFontAttributeName, NSForegroundColorAttributeName, NSImage, NSLineBreakMode,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName, NSResponder, NSScrollElasticity,
+    NSScrollView, NSScrollerKnobStyle, NSScrollerStyle, NSStringDrawing, NSToolTipTag, NSView,
     NSViewToolTipOwner,
 };
 use objc2_core_graphics::CGImage;
-use objc2_foundation::{
-    NSArray, NSDictionary, NSObject, NSPoint, NSRect, NSSize, NSString, NSTimer,
-};
+use objc2_foundation::{NSDictionary, NSObject, NSPoint, NSRect, NSSize, NSString, NSTimer};
 
 use super::capture::{self, CaptureMethod, ItemImage, SlotSource};
 use super::menu_bar_space;
 use super::timer;
-use super::ui::{Weight, font, rect, redraw_on_resize, srgb, tinted_symbol};
+use super::ui::{Weight, font, is_dark, rect, redraw_on_resize, srgb, tinted_symbol};
 use super::windows;
 use crate::agent_bar::{AgentLayout, OurFrames, agent_layout, bar_slots};
 use crate::arrange::{Anchors, BarModel, bar_at, clamp_insertion, marker_x};
@@ -46,6 +43,7 @@ use crate::bar_scroll::{
     StripLayout, autoscroll_offset, document_x, insertion_at, keep_right_distance, strip_layout,
     visible_x,
 };
+use crate::brand;
 use crate::chain::{
     DividerLookup, MSG_NO_ITEM_WINDOWS, SectionChains, find_divider_or_frame, find_titled,
     section_chains,
@@ -57,9 +55,6 @@ use crate::model::{
 };
 use crate::sections::Section;
 
-/// Bar fill when the menu bar color cannot be sampled, per appearance.
-pub const FALLBACK_BAR_COLOR_DARK: [f64; 3] = [0.22, 0.22, 0.24];
-pub const FALLBACK_BAR_COLOR_LIGHT: [f64; 3] = [0.86, 0.86, 0.88];
 /// Space for a section label above its bar.
 const LABEL_HEIGHT: f64 = 22.0;
 /// Inset of the tiles from a bar's top and bottom, and of its scrolling
@@ -93,6 +88,9 @@ pub struct LayoutSnapshot {
     pub model: Option<BarModel>,
     pub images: HashMap<WindowId, TileImage>,
     pub bar_color: Option<[f64; 3]>,
+    /// Whether the item glyphs are light, from the captured images
+    /// (`capture::glyph_tone`); `None` without images to go by.
+    pub light_glyphs: Option<bool>,
     pub menu_bar_height: f64,
     /// Why the bars are empty, when they are.
     pub notice: Option<String>,
@@ -111,6 +109,7 @@ impl LayoutSnapshot {
             model: None,
             images: HashMap::new(),
             bar_color: None,
+            light_glyphs: None,
             menu_bar_height: 24.0,
             notice: Some(notice.to_string()),
             captures: Vec::new(),
@@ -142,6 +141,9 @@ impl LayoutSnapshot {
         }
         if self.color_stale && self.bar_color.is_none() {
             self.bar_color = old.bar_color;
+        }
+        if !self.stale.is_empty() && self.light_glyphs.is_none() {
+            self.light_glyphs = old.light_glyphs;
         }
     }
 }
@@ -259,6 +261,7 @@ pub fn load_snapshot(names: &ControlNames, frames: &ControlFrames) -> LayoutSnap
     let mut images = HashMap::new();
     let mut captures = Vec::new();
     let mut stale = HashSet::new();
+    let mut glyph_images = Vec::new();
     for (section, chain) in [
         (Section::Hidden, &chains.hidden),
         (Section::AlwaysHidden, &chains.always_hidden),
@@ -275,6 +278,12 @@ pub fn load_snapshot(names: &ControlNames, frames: &ControlFrames) -> LayoutSnap
         }
         let result = capture::capture_items_bounded(&records);
         let shots = capture::images_or_placeholders(&records, result);
+        glyph_images.extend(
+            shots
+                .iter()
+                .filter(|s| !s.transparent)
+                .filter_map(|s| s.image.clone()),
+        );
         let timed_out = shots.iter().any(|s| s.method == CaptureMethod::TimedOut);
         let mut with_image = 0;
         for (window, shot) in records.iter().zip(&shots) {
@@ -302,6 +311,7 @@ pub fn load_snapshot(names: &ControlNames, frames: &ControlFrames) -> LayoutSnap
         model: Some(model),
         images,
         bar_color,
+        light_glyphs: capture::glyph_tone(glyph_images.iter().map(|image| &**image)),
         menu_bar_height,
         notice: None,
         captures,
@@ -374,6 +384,7 @@ pub fn load_agent_snapshot(
     let mut images = HashMap::new();
     let mut captures = Vec::new();
     let mut stale = HashSet::new();
+    let mut glyph_images = Vec::new();
     for section in [Section::Hidden, Section::AlwaysHidden, Section::Visible] {
         let ids = model.ids(section);
         let rects: Vec<Rect> = ids.iter().filter_map(|&id| layout.frame(id)).collect();
@@ -395,6 +406,7 @@ pub fn load_agent_snapshot(
             };
             let item = match shot {
                 Some(image) => {
+                    glyph_images.push(image.clone());
                     let scale = CGImage::width(Some(&image)) as f64 / rect.width.max(1.0);
                     ItemImage {
                         id,
@@ -426,6 +438,7 @@ pub fn load_agent_snapshot(
         model: Some(model),
         images,
         bar_color,
+        light_glyphs: capture::glyph_tone(glyph_images.iter().map(|image| &**image)),
         menu_bar_height,
         notice: None,
         captures,
@@ -1015,7 +1028,7 @@ impl LayoutCanvas {
             (
                 self.current_geometry(&state),
                 sizes,
-                knob_style(state.snapshot.bar_color),
+                knob_style(Some(self.bar_fill(&state))),
             )
         };
         for (index, ((g, bar), sizes)) in geometry.iter().zip(&views.bars).zip(&sizes).enumerate() {
@@ -1100,28 +1113,19 @@ impl LayoutCanvas {
             .collect()
     }
 
-    /// Bar fill when no color was sampled: light or dark like the window.
-    fn fallback_bar_color(&self) -> [f64; 3] {
-        // SAFETY: both names are immutable NSString constants exported by
-        // AppKit.
-        let (aqua, dark) = unsafe { (NSAppearanceNameAqua, NSAppearanceNameDarkAqua) };
-        let names = NSArray::from_slice(&[aqua, dark]);
-        let best = self
-            .effectiveAppearance()
-            .bestMatchFromAppearancesWithNames(&names);
-        if best.is_some_and(|name| name.isEqualToString(dark)) {
-            FALLBACK_BAR_COLOR_DARK
-        } else {
-            FALLBACK_BAR_COLOR_LIGHT
-        }
+    /// The bars' fill: the logo's blue or its light tint, whichever
+    /// contrasts with the item glyphs (`brand::bar_fill_for`, issue #3).
+    fn bar_fill(&self, state: &CanvasState) -> [f64; 3] {
+        brand::bar_fill_for(
+            state.snapshot.light_glyphs,
+            state.snapshot.bar_color,
+            is_dark(&self.effectiveAppearance()),
+        )
     }
 
     /// The bar fill and the color of text and placeholders on it.
     fn bar_colors(&self, state: &CanvasState) -> (Retained<NSColor>, Retained<NSColor>) {
-        let color = state
-            .snapshot
-            .bar_color
-            .unwrap_or_else(|| self.fallback_bar_color());
+        let color = self.bar_fill(state);
         let on_bar = if prefers_dark_text(color) {
             NSColor::blackColor().colorWithAlphaComponent(0.7)
         } else {

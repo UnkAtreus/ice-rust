@@ -1031,19 +1031,42 @@ impl Controller {
             eprintln!("ice-rust: cannot find the active menu bar display");
             return;
         };
-        let (items, sizes) = match items {
+        let (items, sizes, glyphs) = match items {
             Ok(list) => {
                 // Bounded (G5): a stuck capture leaves placeholder tiles.
                 let result = capture::capture_items_bounded(&list);
                 if let Err(err) = &result {
                     eprintln!("ice-rust: capture {err}; showing placeholders");
                 }
-                bar_items(&list, &capture::images_or_placeholders(&list, result))
+                let images = capture::images_or_placeholders(&list, result);
+                let glyphs = capture::glyph_tone(
+                    images
+                        .iter()
+                        .filter(|image| !image.transparent)
+                        .filter_map(|image| image.image.as_deref()),
+                );
+                let (items, sizes) = bar_items(&list, &images);
+                (items, sizes, glyphs)
             }
-            Err(message) => message_item(message),
+            Err(message) => {
+                let (items, sizes) = message_item(message);
+                (items, sizes, None)
+            }
         };
+        // The logo's blue or its light tint, whichever contrasts with the
+        // item glyphs (issue #3). The menu bar is sampled only when the
+        // images do not tell.
+        let menu_bar = if glyphs.is_none() {
+            capture::menu_bar_color(&all, &place.display.bounds, place.menu_bar_height)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        let appearance = NSApplication::sharedApplication(self.mtm).effectiveAppearance();
+        let color = crate::brand::bar_fill_for(glyphs, menu_bar, super::ui::is_dark(&appearance));
         self.bar_section.set(section);
-        self.present(&place, anchor, &items, &sizes);
+        self.present(&place, anchor, &items, &sizes, Some(color));
     }
 
     /// Shows `message` in the Ice Bar as a tile that ignores clicks.
@@ -1054,7 +1077,7 @@ impl Controller {
             return;
         };
         let (items, sizes) = message_item(message);
-        self.present(&place, anchor, &items, &sizes);
+        self.present(&place, anchor, &items, &sizes, None);
     }
 
     fn present(
@@ -1063,6 +1086,7 @@ impl Controller {
         anchor: Option<f64>,
         items: &[BarItem],
         sizes: &[(f64, f64)],
+        bar_color: Option<[f64; 3]>,
     ) {
         let screen = cg_to_appkit(place.display.bounds, windows::primary_height());
         // Sized for the largest count the tile can show.
@@ -1095,7 +1119,8 @@ impl Controller {
                 c.defer_click_through(id);
             }
         });
-        self.bar.show(&frame, &bar_layout, items, &on_click);
+        self.bar
+            .show(&frame, &bar_layout, items, &on_click, bar_color);
         self.status.set_icon_active(true);
         self.install_outside_monitor();
     }

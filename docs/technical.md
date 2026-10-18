@@ -253,8 +253,11 @@ bars stretch.
   switches.
 - Menu Bar Layout: "Drag to arrange your menu bar items", a tip about
   Command-dragging in the menu bar, and three bars (Visible, Hidden,
-  Always-Hidden Section) filled with the sampled menu bar color, or light or
-  dark gray to match the window when no sample is available. Each bar shows
+  Always-Hidden Section) filled with the logo's blue (#1C43AB) when the item
+  images are mostly light, or its light tint (#E4E8F5) when they are mostly
+  dark, so white menu bar text stays readable in light mode (issue #3). The
+  tone comes from the captured images, else from the menu bar color sample,
+  else from the window's appearance; the Ice Bar uses the same fill. Each bar shows
   the real item images right-aligned in menu bar order, with placeholder
   tiles (a dashed question mark) where a capture fails; hovering a tile
   shows its name. Every item is in its bar: a section wider than its bar

@@ -25,7 +25,7 @@ use objc2_foundation::NSDictionary;
 
 use super::windows::rect_to_cg;
 use crate::geometry::{composite_scale, crop_rect, menu_bar_window};
-use crate::image_check::{PixelLayout, average_color, is_fully_transparent};
+use crate::image_check::{PixelLayout, average_color, is_fully_transparent, light_glyphs};
 use crate::model::{
     CAPTURE_OPTION, CAPTURE_TIMEOUT, COLOR_CAPTURE_OPTION, Rect, WALLPAPER_OWNER,
     WALLPAPER_TITLE_PREFIX, WindowId, WindowRecord,
@@ -134,6 +134,23 @@ fn capture_windows_in(
     unsafe {
         CGWindowListCreateImageFromArray(rect, &array, CGWindowImageOption(option))
     }
+}
+
+/// Captures `bounds` (CG space) from window `id` and every on-screen window
+/// below it. Returns `None` when the window server refuses.
+fn capture_with_windows_below(
+    bounds: &Rect,
+    id: WindowId,
+    option: u32,
+) -> Option<CFRetained<CGImage>> {
+    // Deprecated like the array call (M7), and still working.
+    #[allow(deprecated)]
+    CGWindowListCreateImage(
+        rect_to_cg(bounds),
+        CGWindowListOption::OptionOnScreenBelowWindow | CGWindowListOption::OptionIncludingWindow,
+        id,
+        CGWindowImageOption(option),
+    )
 }
 
 /// Captures the given windows by id, including off-screen ones, as one image
@@ -254,6 +271,24 @@ fn rgba_pixels(image: &CGImage, width: usize, height: usize) -> Option<Vec<u8>> 
     CGContext::draw_image(Some(&context), full, Some(image));
     drop(context);
     Some(buffer)
+}
+
+/// The tone of the glyphs in `images` (`image_check::light_glyphs`), each
+/// drawn at most 64 x 32 pixels.
+pub fn glyph_tone<'a>(images: impl IntoIterator<Item = &'a CGImage>) -> Option<bool> {
+    let buffers: Vec<(Vec<u8>, usize, usize)> = images
+        .into_iter()
+        .filter_map(|image| {
+            let width = CGImage::width(Some(image)).clamp(1, 64);
+            let height = CGImage::height(Some(image)).clamp(1, 32);
+            rgba_pixels(image, width, height).map(|pixels| (pixels, width, height))
+        })
+        .collect();
+    let views: Vec<(&[u8], usize, usize)> = buffers
+        .iter()
+        .map(|(pixels, width, height)| (pixels.as_slice(), *width, *height))
+        .collect();
+    light_glyphs(&views)
 }
 
 /// True when every pixel of the image has zero alpha. The image is drawn
@@ -416,26 +451,31 @@ fn wallpaper_window<'a>(windows: &'a [WindowRecord], display: &Rect) -> Option<&
 
 /// Average color of the menu bar on `display` (CG space): the Window Server
 /// "Menubar" window composited over the desktop picture, captured on the
-/// worker thread at nominal resolution. `Ok(None)` when the windows are not
-/// found or the image has no opaque pixels.
+/// worker thread at nominal resolution. Without the Dock's desktop picture
+/// window, the Menubar window and every window below it, whichever process
+/// draws the desktop picture: the Menubar window alone is transparent but
+/// for its text, and averaged the text color into the bar (issue #3).
+/// `Ok(None)` when the windows are not found or the image is mostly
+/// transparent.
 pub fn menu_bar_color(
     windows: &[WindowRecord],
     display: &Rect,
     menu_bar_height: f64,
 ) -> Result<Option<[f64; 3]>, BoundedError> {
-    let mut ids = Vec::new();
-    if let Some(bar) = menu_bar_window(windows, display) {
-        ids.push(bar.id);
-    }
-    if let Some(wallpaper) = wallpaper_window(windows, display) {
-        ids.push(wallpaper.id);
-    }
-    if ids.is_empty() {
+    let bar = menu_bar_window(windows, display).map(|w| w.id);
+    let wallpaper = wallpaper_window(windows, display).map(|w| w.id);
+    if bar.is_none() && wallpaper.is_none() {
         return Ok(None);
     }
     let strip = Rect::new(display.x, display.y, display.width, menu_bar_height);
     run_bounded(&CAPTURE_GATE, CAPTURE_TIMEOUT, move || {
-        let image = capture_windows_in(Some(&strip), &ids, COLOR_CAPTURE_OPTION)?;
+        let image = match (bar, wallpaper) {
+            (Some(bar), None) => capture_with_windows_below(&strip, bar, COLOR_CAPTURE_OPTION)?,
+            _ => {
+                let ids: Vec<WindowId> = bar.into_iter().chain(wallpaper).collect();
+                capture_windows_in(Some(&strip), &ids, COLOR_CAPTURE_OPTION)?
+            }
+        };
         let width = CGImage::width(Some(&image)).clamp(1, 64);
         let height = CGImage::height(Some(&image)).clamp(1, 4);
         let pixels = rgba_pixels(&image, width, height)?;

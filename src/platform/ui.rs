@@ -6,13 +6,14 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBezierPath, NSColor, NSControl, NSFont, NSFontWeight,
-    NSFontWeightBold, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage,
-    NSImageSymbolConfiguration, NSImageView, NSLineBreakMode, NSResponder, NSTextField, NSView,
-    NSViewLayerContentsRedrawPolicy, NSWindowDelegate,
+    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSAutoresizingMaskOptions,
+    NSBezierPath, NSColor, NSControl, NSFont, NSFontWeight, NSFontWeightBold, NSFontWeightMedium,
+    NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSImageSymbolConfiguration, NSImageView,
+    NSLineBreakMode, NSResponder, NSTextField, NSView, NSViewLayerContentsRedrawPolicy,
+    NSWindowDelegate,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-use objc2_foundation::{NSNotification, NSObject, NSRect, NSString};
+use objc2_foundation::{NSArray, NSNotification, NSObject, NSRect, NSString};
 
 pub fn rect(x: f64, y: f64, width: f64, height: f64) -> NSRect {
     CGRect::new(CGPoint::new(x, y), CGSize::new(width, height))
@@ -364,6 +365,17 @@ pub fn symbol_view(
     view.setContentTintColor(Some(tint));
     view.setFrame(frame);
     Some(view)
+}
+
+/// Whether `appearance` is a dark one (Dark Aqua rather than Aqua).
+pub fn is_dark(appearance: &NSAppearance) -> bool {
+    // SAFETY: both names are immutable NSString constants exported by
+    // AppKit.
+    let (aqua, dark) = unsafe { (NSAppearanceNameAqua, NSAppearanceNameDarkAqua) };
+    let names = NSArray::from_slice(&[aqua, dark]);
+    appearance
+        .bestMatchFromAppearancesWithNames(&names)
+        .is_some_and(|name| name.isEqualToString(dark))
 }
 
 /// sRGB color from 0..=1 components.
