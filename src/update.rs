@@ -829,9 +829,12 @@ pub fn swap(
 /// Shell for the relaunch helper.
 pub const RELAUNCH_SHELL: &str = "/bin/sh";
 /// Waits up to 60 s for pid `$1` to exit, then opens bundle `$2`. Both
-/// arrive as positional arguments, never inside the script text.
+/// arrive as positional arguments, never inside the script text. `-n`
+/// opens a new instance of that bundle: without it, LaunchServices only
+/// activated another running process with the same bundle id and left the
+/// updated app closed (seen in the macOS 27 VM, 2026-10-18).
 pub const RELAUNCH_SCRIPT: &str = "i=0; while kill -0 \"$1\" 2>/dev/null; do i=$((i + 1)); \
-     if [ \"$i\" -ge 300 ]; then exit 1; fi; sleep 0.2; done; exec /usr/bin/open \"$2\"";
+     if [ \"$i\" -ge 300 ]; then exit 1; fi; sleep 0.2; done; exec /usr/bin/open -n \"$2\"";
 
 /// Arguments for `RELAUNCH_SHELL`: the script, `$0`, the pid and the path.
 pub fn relaunch_args(pid: u32, bundle: &Path) -> Vec<OsString> {
@@ -1766,7 +1769,8 @@ mod tests {
         assert!(!RELAUNCH_SCRIPT.contains("4242"));
         assert!(!RELAUNCH_SCRIPT.contains("Ice Rust"));
         assert!(RELAUNCH_SCRIPT.contains("\"$1\"") && RELAUNCH_SCRIPT.contains("\"$2\""));
-        assert!(RELAUNCH_SCRIPT.contains("exec /usr/bin/open"));
+        // A new instance of that bundle, whatever else with its bundle id runs.
+        assert!(RELAUNCH_SCRIPT.contains("exec /usr/bin/open -n \"$2\""));
     }
 
     #[test]
