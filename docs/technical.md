@@ -60,13 +60,19 @@ on: macOS 26.3 on Apple Silicon, with four displays.
 - Revealed sections hide again by one of three strategies, as in Ice
   (rebuilt from [the clean-room spec](clean-room/smart-rehide/SPEC.md)).
   Smart: 250 ms after a left click outside the menu bar, everything hides
-  when the active Space changed, or when the window under the pointer is a
-  normal window of the active regular app or a Dock window; a menu or
-  panel under the pointer keeps the items. Timed: everything hides after
-  the rehide interval (15 s by default) with the pointer outside the menu
-  bar, no pop-up menu on screen, and no panel open. Focused app: 0.1 s
-  after another app comes to the front, the hidden section hides, which
-  hides everything, unless the pointer is in the menu bar or the new app
+  when the active Space changed, or when the app under the pointer is the
+  Dock or the active regular app. The app under the pointer comes from an
+  Accessibility hit test (`AXUIElementCopyElementAtPosition` on the
+  system-wide element, 0.25 s timeout), or without one from the frontmost
+  normal window (layer 0) under the pointer. A click on the Dock always
+  hides. For any other app, a menu, pop-up or panel of that app under the
+  pointer (its frontmost window there is above layer 0) keeps the items;
+  other processes' windows, such as full-display overlays, play no part.
+  Timed: everything hides after the rehide interval (15 s by default) with
+  the pointer outside the menu bar, no pop-up menu on screen, and no panel
+  open. Focused app: 0.1 s after another app comes to the front, the
+  hidden section hides, which hides everything, unless the pointer is in
+  the menu bar or the new app
   is ice-rust itself or the app ice-rust hands focus back to. Clicks that
   ice-rust posts never trigger Smart, and nothing rehides while a move or
   Menu Bar Layout holds the sections.
@@ -197,7 +203,7 @@ under Custom image.
 | Permission | Needed for | API |
 |---|---|---|
 | Screen Recording | Reading other processes' window titles (to find the divider) and capturing item images | `CGPreflightScreenCaptureAccess`, `CGRequestScreenCaptureAccess` |
-| Accessibility / event posting | Clicking the real item after a click in the Ice Bar, moving items from the Menu Bar Layout pane, and reading where the frontmost app's menus end for Show on click and Show on hover | `CGPreflightPostEventAccess`, `CGRequestPostEventAccess`, `AXIsProcessTrustedWithOptions`, `AXUIElementCopyAttributeValue` |
+| Accessibility / event posting | Clicking the real item after a click in the Ice Bar, moving items from the Menu Bar Layout pane, reading where the frontmost app's menus end for Show on click and Show on hover, and finding the clicked app for Smart rehide (without it, Smart falls back to the window list) | `CGPreflightPostEventAccess`, `CGRequestPostEventAccess`, `AXIsProcessTrustedWithOptions`, `AXUIElementCopyAttributeValue`, `AXUIElementCopyElementAtPosition` |
 
 On macOS 26 every status item window, including ice-rust's own, belongs to
 Control Center, so even finding its own divider by title needs Screen
@@ -789,10 +795,14 @@ window per display (`crate::agent_bar`, `platform/app/agent.rs`, research in
 - Out of scope: global hotkeys, menu bar appearance and search. The
   Settings window has no Hotkeys, Appearance or Updates pages.
 - Smart and focused-app rehide follow Ice with the changes in the spec's
-  Part B: the clicked window is chosen without window titles, so Screen
+  Part B: Smart finds the clicked app with an Accessibility hit test and
+  falls back to the window list, never reading window titles, so Screen
   Recording is not needed; Focused app needs Automatically rehide; and
-  the menu bar test uses the display under the pointer. They are not yet
-  checked on macOS 27 (spec D10).
+  the menu bar test uses the display under the pointer. Two earlier
+  versions of the clicked-app rule failed in the macOS 27 VM because of
+  full-display overlay windows (spec D10 results); the current rule, which
+  looks only at the clicked app's own windows, has not been run in the VM
+  yet.
 - Show on click and Show on hover need Accessibility to find where the app
   menus end, act only on the menu bar of the display with the ice-rust icon,
   and do nothing while ice-rust itself is in front. Show on scroll is

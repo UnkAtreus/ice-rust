@@ -14,7 +14,20 @@ const DOCK_PID: Pid = 1;
 const EDITOR_PID: Pid = 42;
 const OTHER_PID: Pid = 43;
 const ROGUE_PID: Pid = 9;
+const WINDOW_MANAGER_PID: Pid = 2;
+const NOTIFICATION_CENTER_PID: Pid = 3;
+const MENU_PID: Pid = 44;
+const TEXTEDIT_PID: Pid = 45;
+const FINDER_PID: Pid = 46;
+/// A process ID that no running app has.
+const UNKNOWN_PID: Pid = 999;
 const CURSOR_LEVEL: i32 = 20;
+/// A cursor level above the menu and Dock layers used in the D5 tests, so those windows take part in the walk.
+const WIDE_CURSOR_LEVEL: i32 = 500;
+/// The desktop-level layer of the Dock or WindowManager wallpaper window (D10 results).
+const DESKTOP_LAYER: i32 = -2147483624;
+/// The bottom desktop-level layer, owned by the window server (D10 results).
+const SERVER_LAYER: i32 = -2147483626;
 const SPACE: SpaceId = 7;
 
 fn settings(auto_rehide: bool, strategy: RehideStrategy) -> RehideSettings {
@@ -77,15 +90,103 @@ fn editor_apps() -> Vec<(Pid, RunningApp)> {
     )]
 }
 
-fn check<'a>(windows: &'a [Window]) -> SmartCheck<'a> {
+fn check_at<'a>(windows: &'a [Window], cursor_level: i32, hit_test: Option<Pid>) -> SmartCheck<'a> {
     SmartCheck {
         snapshot_space: SPACE,
         current_space: SPACE,
         pointer: Some(POINTER),
         windows,
-        cursor_level: CURSOR_LEVEL,
-        dock: Some(DOCK_PID),
+        cursor_level,
+        hit_test,
     }
+}
+
+/// The check with no hit test, so the clicked app comes from the window list.
+fn check<'a>(windows: &'a [Window]) -> SmartCheck<'a> {
+    check_at(windows, CURSOR_LEVEL, None)
+}
+
+/// The Dock (with its bundle identifier) and WindowManager, both inactive accessory apps. The spec
+/// gives no bundle identifier for WindowManager, so none is set.
+fn system_apps() -> Vec<(Pid, RunningApp)> {
+    vec![
+        (
+            DOCK_PID,
+            app(Some(DOCK_BUNDLE_ID), false, ActivationPolicy::Accessory),
+        ),
+        (
+            WINDOW_MANAGER_PID,
+            app(None, false, ActivationPolicy::Accessory),
+        ),
+    ]
+}
+
+/// The system apps plus the given apps.
+fn apps_with(extra: &[(Pid, RunningApp)]) -> Vec<(Pid, RunningApp)> {
+    let mut apps = system_apps();
+    apps.extend_from_slice(extra);
+    apps
+}
+
+/// Notification Center, an inactive accessory app (D10 results: its widget clicks are hit-tested
+/// to it). The spec gives no bundle identifier for it, so none is set.
+fn notification_center() -> (Pid, RunningApp) {
+    (
+        NOTIFICATION_CENTER_PID,
+        app(None, false, ActivationPolicy::Accessory),
+    )
+}
+
+/// An active regular app with the given bundle identifier.
+fn active_regular(pid: Pid, bundle_id: &str) -> (Pid, RunningApp) {
+    (pid, app(Some(bundle_id), true, ActivationPolicy::Regular))
+}
+
+fn editor_active() -> (Pid, RunningApp) {
+    (
+        EDITOR_PID,
+        app(Some("com.example.editor"), true, ActivationPolicy::Regular),
+    )
+}
+
+fn editor_inactive() -> (Pid, RunningApp) {
+    (
+        EDITOR_PID,
+        app(Some("com.example.editor"), false, ActivationPolicy::Regular),
+    )
+}
+
+fn textedit(active: bool) -> (Pid, RunningApp) {
+    (
+        TEXTEDIT_PID,
+        app(
+            Some("com.example.textedit"),
+            active,
+            ActivationPolicy::Regular,
+        ),
+    )
+}
+
+/// An ordinary app with a pop-up or panel: inactive and accessory, so it never hides on its own.
+fn panel_app() -> (Pid, RunningApp) {
+    (
+        MENU_PID,
+        app(
+            Some("com.example.panel"),
+            false,
+            ActivationPolicy::Accessory,
+        ),
+    )
+}
+
+/// A 2560 by 1440 display from the origin, as in the D10 run.
+fn full_display() -> Rect {
+    Rect::new(0.0, 0.0, 2560.0, 1440.0)
+}
+
+/// A 300 by 300 rectangle that does not contain POINTER.
+fn off_pointer() -> Rect {
+    Rect::new(600.0, 0.0, 300.0, 300.0)
 }
 
 fn smart_settings() -> RehideSettings {
@@ -797,8 +898,11 @@ fn r13_first_covering_window_in_front_to_back_order_wins() {
         window(0, covering(), OTHER_PID),
         window(0, covering(), EDITOR_PID),
     ];
-    let picked = clicked_window(&windows, POINTER, CURSOR_LEVEL, Some(DOCK_PID));
-    assert_eq!(picked.map(|w| w.owner), Some(OTHER_PID));
+    // D5 step 1 with no hit test: the owner of the first layer-0 window at the pointer.
+    assert_eq!(
+        clicked_app(&windows, POINTER, CURSOR_LEVEL, None),
+        Some(OTHER_PID)
+    );
 }
 
 // R13: no covering window gives no change.
@@ -809,10 +913,8 @@ fn r13_no_covering_window_gives_no_change() {
         smart_check(&check(&windows), lookup(&editor_apps())),
         CheckDecision::NoChange
     );
-    assert_eq!(
-        clicked_window(&windows, POINTER, CURSOR_LEVEL, Some(DOCK_PID)),
-        None
-    );
+    // D5 step 1: with no hit test and no layer-0 window at the pointer, there is no clicked app.
+    assert_eq!(clicked_app(&windows, POINTER, CURSOR_LEVEL, None), None);
 }
 
 // Terms and D5: the containment edge is half-open, so the max edges are outside.
@@ -826,82 +928,644 @@ fn d5_rect_contains_is_half_open() {
     assert!(!rect.contains(9.9, 30.0), "just under min x is outside");
 }
 
-// D5: a window on layer 0 that covers the pointer is the clicked window.
+// ---------------------------------------------------------------------------
+// D5 step 1: the clicked app
+// ---------------------------------------------------------------------------
+
+// D5 step 1: the hit test's process ID wins over the window list. The layer-0 owner is an
+// editor, but the hit test names an inactive app, so no change.
 #[test]
-fn d5_layer_zero_window_is_clicked_window() {
+fn d5_step1_hit_test_wins_over_window_list_inactive() {
     let windows = [window(0, covering(), EDITOR_PID)];
-    let picked = clicked_window(&windows, POINTER, CURSOR_LEVEL, Some(DOCK_PID));
-    assert_eq!(picked.map(|w| w.owner), Some(EDITOR_PID));
-}
-
-// D5: a non-Dock window above layer 0 (menu, pop-up, status item) stops the walk.
-// The layer 0 window behind it must not be used.
-#[test]
-fn d5_non_dock_window_above_layer_zero_stops_walk() {
-    let windows = [
-        window(8, covering(), ROGUE_PID),
-        window(0, covering(), EDITOR_PID),
-    ];
+    let apps = apps_with(&[
+        editor_active(),
+        (
+            OTHER_PID,
+            app(Some("com.example.other"), false, ActivationPolicy::Regular),
+        ),
+    ]);
     assert_eq!(
-        clicked_window(&windows, POINTER, CURSOR_LEVEL, Some(DOCK_PID)),
-        None
+        clicked_app(&windows, POINTER, WIDE_CURSOR_LEVEL, Some(OTHER_PID)),
+        Some(OTHER_PID)
     );
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(OTHER_PID));
+    assert_eq!(smart_check(&c, lookup(&apps)), CheckDecision::NoChange);
+}
+
+// D5 step 1: the hit test wins over the window list. The hit test names an active app, so it
+// hides, although the window list's layer-0 owner is an inactive editor.
+#[test]
+fn d5_step1_hit_test_wins_over_window_list_active() {
+    let windows = [window(0, covering(), EDITOR_PID)];
+    let apps = apps_with(&[
+        editor_inactive(),
+        (
+            OTHER_PID,
+            app(Some("com.example.other"), true, ActivationPolicy::Regular),
+        ),
+    ]);
     assert_eq!(
-        smart_check(&check(&windows), lookup(&editor_apps())),
-        CheckDecision::NoChange
+        clicked_app(&windows, POINTER, WIDE_CURSOR_LEVEL, Some(OTHER_PID)),
+        Some(OTHER_PID)
     );
-}
-
-// D5: a non-Dock window below layer 0 (another app's desktop-level window) is passed over.
-#[test]
-fn d5_other_app_desktop_window_is_passed_over() {
-    let windows = [
-        window(-1, covering(), ROGUE_PID),
-        window(0, covering(), EDITOR_PID),
-    ];
-    let picked = clicked_window(&windows, POINTER, CURSOR_LEVEL, Some(DOCK_PID));
-    assert_eq!(picked.map(|w| w.owner), Some(EDITOR_PID));
-}
-
-// D5, R15: a click on the desktop reaches the Dock's wallpaper window, which hides everything.
-// The layer is a desktop-level value; the real layer is a macOS check (D10), not a pure-module fact.
-#[test]
-fn d5_r15_dock_wallpaper_click_hides_everything() {
-    let windows = [window(-1000, covering(), DOCK_PID)];
-    let apps = [(
-        DOCK_PID,
-        app(Some("com.apple.dock"), false, ActivationPolicy::Accessory),
-    )];
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(OTHER_PID));
     assert_eq!(
-        smart_check(&check(&windows), lookup(&apps)),
+        smart_check(&c, lookup(&apps)),
         CheckDecision::HideEverything
     );
 }
 
-// D5: the Dock's windows are the clicked window at any layer, not just layer 0.
+// D5 step 1: a hit test that names a process with no running app gives no change, and the
+// window owner does not take its place.
 #[test]
-fn d5_dock_window_is_clicked_window_at_any_layer() {
-    let windows = [window(8, covering(), DOCK_PID)];
-    let picked = clicked_window(&windows, POINTER, CURSOR_LEVEL, Some(DOCK_PID));
-    assert_eq!(picked.map(|w| w.owner), Some(DOCK_PID));
+fn d5_step1_hit_test_with_no_running_app_gives_no_change() {
+    let windows = [window(0, covering(), EDITOR_PID)];
+    let apps = apps_with(&[editor_active()]);
+    assert_eq!(
+        clicked_app(&windows, POINTER, WIDE_CURSOR_LEVEL, Some(UNKNOWN_PID)),
+        Some(UNKNOWN_PID)
+    );
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(UNKNOWN_PID));
+    assert_eq!(smart_check(&c, lookup(&apps)), CheckDecision::NoChange);
 }
 
-// D5: with the Dock not running (dock None), a desktop-level window is passed over, not taken.
+// D5 step 1 (fallback): with no hit test, the owner of the first layer-0 window containing the
+// pointer, even when earlier windows sit at other layers or miss the pointer.
 #[test]
-fn d5_desktop_window_passed_over_when_dock_not_running() {
-    let windows = [window(-20, covering(), DOCK_PID)];
-    assert_eq!(clicked_window(&windows, POINTER, CURSOR_LEVEL, None), None);
+fn d5_step1_fallback_names_owner_of_first_layer_zero_window() {
+    let windows = [
+        window(-1, covering(), ROGUE_PID),
+        window(0, off_pointer(), OTHER_PID),
+        window(0, covering(), EDITOR_PID),
+        window(0, covering(), OTHER_PID),
+    ];
+    assert_eq!(
+        clicked_app(&windows, POINTER, WIDE_CURSOR_LEVEL, None),
+        Some(EDITOR_PID)
+    );
 }
 
-// D5: a Dock window that is also above the cursor level is still skipped (R12).
+// D5 step 1 (fallback) and step 4: the fallback names an active regular editor, which hides.
 #[test]
-fn d5_dock_window_at_cursor_level_is_skipped() {
+fn d5_step1_fallback_active_app_hides() {
+    let windows = [window(0, covering(), EDITOR_PID)];
+    let apps = apps_with(&[editor_active()]);
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, None);
+    assert_eq!(
+        smart_check(&c, lookup(&apps)),
+        CheckDecision::HideEverything
+    );
+}
+
+// D5 step 1 (fallback) near miss: the same window names an inactive editor, so no change.
+#[test]
+fn d5_step1_fallback_inactive_app_gives_no_change() {
+    let windows = [window(0, covering(), EDITOR_PID)];
+    let apps = apps_with(&[editor_inactive()]);
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, None);
+    assert_eq!(smart_check(&c, lookup(&apps)), CheckDecision::NoChange);
+}
+
+// D5 step 1 (fallback): only layer-0 windows count. Windows at other layers are skipped,
+// whoever owns them.
+#[test]
+fn d5_step1_fallback_skips_windows_at_other_layers() {
+    let windows = [
+        window(-1, covering(), MENU_PID),
+        window(8, covering(), MENU_PID),
+        window(101, covering(), MENU_PID),
+        window(0, covering(), EDITOR_PID),
+    ];
+    assert_eq!(
+        clicked_app(&windows, POINTER, WIDE_CURSOR_LEVEL, None),
+        Some(EDITOR_PID)
+    );
+}
+
+// D5 step 1 (fallback) and R12: a window at the cursor level is skipped, and the layer-0 window
+// behind it names the clicked app.
+#[test]
+fn d5_step1_fallback_skips_window_at_cursor_level() {
     let windows = [
         window(CURSOR_LEVEL, covering(), DOCK_PID),
         window(0, covering(), EDITOR_PID),
     ];
-    let picked = clicked_window(&windows, POINTER, CURSOR_LEVEL, Some(DOCK_PID));
-    assert_eq!(picked.map(|w| w.owner), Some(EDITOR_PID));
+    assert_eq!(
+        clicked_app(&windows, POINTER, CURSOR_LEVEL, None),
+        Some(EDITOR_PID)
+    );
+}
+
+// D5 step 1 (fallback): no hit test and no layer-0 window containing the pointer gives no
+// clicked app, so no change, and the app lookup is not needed.
+#[test]
+fn d5_step1_no_source_gives_no_change() {
+    let apps = apps_with(&[editor_active()]);
+    let cases = vec![
+        vec![],
+        vec![window(0, off_pointer(), EDITOR_PID)],
+        vec![
+            window(-1, covering(), EDITOR_PID),
+            window(101, covering(), EDITOR_PID),
+        ],
+        vec![window(WIDE_CURSOR_LEVEL, covering(), EDITOR_PID)],
+    ];
+    for windows in &cases {
+        assert_eq!(clicked_app(windows, POINTER, WIDE_CURSOR_LEVEL, None), None);
+        let c = check_at(windows, WIDE_CURSOR_LEVEL, None);
+        assert_eq!(smart_check(&c, lookup(&apps)), CheckDecision::NoChange);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D5 step 2: the Dock
+// ---------------------------------------------------------------------------
+
+// D5 step 2: a clicked app with the Dock's bundle identifier hides everything, with no window in
+// the list.
+#[test]
+fn d5_step2_dock_named_by_hit_test_hides_everything() {
+    let windows: [Window; 0] = [];
+    let apps = apps_with(&[]);
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(DOCK_PID));
+    assert_eq!(
+        smart_check(&c, lookup(&apps)),
+        CheckDecision::HideEverything
+    );
+}
+
+// D5 step 2 before step 3: the Dock hides although its own layer-20 window covers the pointer
+// and step 3 would stop the check on it.
+#[test]
+fn d5_step2_dock_is_decided_before_menu_stop() {
+    let windows = [
+        window(20, full_display(), DOCK_PID),
+        window(0, covering(), EDITOR_PID),
+    ];
+    let apps = apps_with(&[editor_inactive()]);
+    assert!(menu_stop(&windows, POINTER, WIDE_CURSOR_LEVEL, DOCK_PID));
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(DOCK_PID));
+    assert_eq!(
+        smart_check(&c, lookup(&apps)),
+        CheckDecision::HideEverything
+    );
+}
+
+// D5 step 2 (fallback): the Dock's layer-0 window at the pointer names the Dock, which hides.
+#[test]
+fn d5_step2_dock_named_by_fallback_hides_everything() {
+    let windows = [
+        window(20, full_display(), DOCK_PID),
+        window(0, covering(), DOCK_PID),
+        window(101, covering(), MENU_PID),
+    ];
+    let apps = apps_with(&[panel_app()]);
+    assert_eq!(
+        clicked_app(&windows, POINTER, WIDE_CURSOR_LEVEL, None),
+        Some(DOCK_PID)
+    );
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, None);
+    assert_eq!(
+        smart_check(&c, lookup(&apps)),
+        CheckDecision::HideEverything
+    );
+}
+
+// D5 step 2 near miss: a bundle identifier that only looks like the Dock's is not exempt. Inactive
+// and with no window, it falls through to step 4 and gives no change.
+#[test]
+fn d5_step2_dock_look_alike_is_not_exempt() {
+    let windows: [Window; 0] = [];
+    let apps = [(
+        DOCK_PID,
+        app(
+            Some("com.apple.dock.helper"),
+            false,
+            ActivationPolicy::Accessory,
+        ),
+    )];
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(DOCK_PID));
+    assert_eq!(smart_check(&c, lookup(&apps)), CheckDecision::NoChange);
+}
+
+// ---------------------------------------------------------------------------
+// D5 step 3: the menu stop (Q6)
+// ---------------------------------------------------------------------------
+
+// D5 step 3: the first window owned by the clicked app that contains the pointer decides. A
+// layer-0 window in front lets step 4 run; a menu in front stops the check.
+#[test]
+fn d5_step3_first_owned_window_decides_the_menu_stop() {
+    let apps = apps_with(&[editor_active()]);
+    let layer_zero_first = [
+        window(0, covering(), EDITOR_PID),
+        window(101, covering(), EDITOR_PID),
+    ];
+    let menu_first = [
+        window(101, covering(), EDITOR_PID),
+        window(0, covering(), EDITOR_PID),
+    ];
+    assert!(!menu_stop(
+        &layer_zero_first,
+        POINTER,
+        WIDE_CURSOR_LEVEL,
+        EDITOR_PID
+    ));
+    assert!(menu_stop(
+        &menu_first,
+        POINTER,
+        WIDE_CURSOR_LEVEL,
+        EDITOR_PID
+    ));
+    let c = check_at(&layer_zero_first, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+    assert_eq!(
+        smart_check(&c, lookup(&apps)),
+        CheckDecision::HideEverything
+    );
+    let c = check_at(&menu_first, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+    assert_eq!(smart_check(&c, lookup(&apps)), CheckDecision::NoChange);
+}
+
+// D5 step 3: a menu (above layer 0) of an active regular clicked app gives no change, whether the
+// hit test or the window list names the app.
+#[test]
+fn d5_step3_menu_of_active_app_gives_no_change() {
+    let apps = apps_with(&[editor_active()]);
+    for layer in [1, 8, 101] {
+        let windows = [
+            window(layer, covering(), EDITOR_PID),
+            window(0, covering(), EDITOR_PID),
+        ];
+        let hit = check_at(&windows, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+        assert_eq!(
+            smart_check(&hit, lookup(&apps)),
+            CheckDecision::NoChange,
+            "hit test, layer {layer}"
+        );
+        let fallback = check_at(&windows, WIDE_CURSOR_LEVEL, None);
+        assert_eq!(
+            smart_check(&fallback, lookup(&apps)),
+            CheckDecision::NoChange,
+            "fallback, layer {layer}"
+        );
+    }
+}
+
+// D5 step 3 near miss: a window at layer 0 or below is not a menu, so step 4 runs and hides for
+// an active app and gives no change for an inactive one.
+#[test]
+fn d5_step3_layer_zero_or_below_runs_step_4() {
+    let active = apps_with(&[editor_active()]);
+    let inactive = apps_with(&[editor_inactive()]);
+    for layer in [0, -1, -20] {
+        let windows = [window(layer, covering(), EDITOR_PID)];
+        let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+        assert_eq!(
+            smart_check(&c, lookup(&active)),
+            CheckDecision::HideEverything,
+            "layer {layer}, active"
+        );
+        assert_eq!(
+            smart_check(&c, lookup(&inactive)),
+            CheckDecision::NoChange,
+            "layer {layer}, inactive"
+        );
+    }
+}
+
+// D5 step 3 (D10): full-display windows of the Dock (layer 20), Notification Center (layer 21) and
+// WindowManager (layer 18) in front neither stop nor decide a check, however the clicked app is
+// found.
+#[test]
+fn d5_step3_other_process_overlays_in_front_neither_stop_nor_decide() {
+    let apps = apps_with(&[editor_active(), notification_center()]);
+    let overlays = [
+        window(20, full_display(), DOCK_PID),
+        window(21, full_display(), NOTIFICATION_CENTER_PID),
+        window(18, full_display(), WINDOW_MANAGER_PID),
+    ];
+    for overlay in overlays {
+        let windows = [overlay, window(0, covering(), EDITOR_PID)];
+        assert!(!menu_stop(&windows, POINTER, WIDE_CURSOR_LEVEL, EDITOR_PID));
+        for hit in [Some(EDITOR_PID), None] {
+            let c = check_at(&windows, WIDE_CURSOR_LEVEL, hit);
+            assert_eq!(
+                smart_check(&c, lookup(&apps)),
+                CheckDecision::HideEverything,
+                "overlay {overlay:?}, hit {hit:?}"
+            );
+        }
+    }
+    let mut all = overlays.to_vec();
+    all.push(window(0, covering(), EDITOR_PID));
+    assert!(!menu_stop(&all, POINTER, WIDE_CURSOR_LEVEL, EDITOR_PID));
+    let c = check_at(&all, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+    assert_eq!(
+        smart_check(&c, lookup(&apps)),
+        CheckDecision::HideEverything
+    );
+}
+
+// D5 step 3 near miss: the same full-display overlays at layers 18, 20 and 21, owned by the
+// clicked app, are its menu and stop the check.
+#[test]
+fn d5_step3_overlays_of_clicked_app_stop_the_check() {
+    let apps = apps_with(&[editor_active()]);
+    for layer in [18, 20, 21] {
+        let windows = [
+            window(layer, full_display(), EDITOR_PID),
+            window(0, covering(), EDITOR_PID),
+        ];
+        let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+        assert_eq!(
+            smart_check(&c, lookup(&apps)),
+            CheckDecision::NoChange,
+            "layer {layer}"
+        );
+    }
+}
+
+// D5 step 3 near miss: a menu of another process above layer 0 does not stop the clicked app,
+// whether the clicked app comes from the hit test or the fallback.
+#[test]
+fn d5_step3_other_process_menu_does_not_stop() {
+    let apps = apps_with(&[editor_active(), panel_app()]);
+    for layer in [1, 18, 101] {
+        let windows = [
+            window(layer, covering(), MENU_PID),
+            window(0, covering(), EDITOR_PID),
+        ];
+        for hit in [Some(EDITOR_PID), None] {
+            let c = check_at(&windows, WIDE_CURSOR_LEVEL, hit);
+            assert_eq!(
+                smart_check(&c, lookup(&apps)),
+                CheckDecision::HideEverything,
+                "layer {layer}, hit {hit:?}"
+            );
+        }
+    }
+}
+
+// D5 step 3: a clicked app with no window under the pointer goes on to step 4.
+#[test]
+fn d5_step3_no_window_under_pointer_goes_on_to_step_4() {
+    let active = apps_with(&[editor_active()]);
+    let inactive = apps_with(&[editor_inactive()]);
+    let off = [window(101, off_pointer(), EDITOR_PID)];
+    let c = check_at(&off, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+    assert_eq!(
+        smart_check(&c, lookup(&active)),
+        CheckDecision::HideEverything
+    );
+    assert_eq!(smart_check(&c, lookup(&inactive)), CheckDecision::NoChange);
+    let none: [Window; 0] = [];
+    let c = check_at(&none, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+    assert_eq!(
+        smart_check(&c, lookup(&active)),
+        CheckDecision::HideEverything
+    );
+}
+
+// D5 step 3: windows at or above the cursor level, and windows that miss the pointer, do not
+// count toward the menu stop.
+#[test]
+fn d5_step3_cursor_level_and_off_pointer_windows_do_not_stop() {
+    let apps = apps_with(&[editor_active()]);
+    let at_level = [
+        window(WIDE_CURSOR_LEVEL, covering(), EDITOR_PID),
+        window(0, covering(), EDITOR_PID),
+    ];
+    let off = [
+        window(101, off_pointer(), EDITOR_PID),
+        window(0, covering(), EDITOR_PID),
+    ];
+    for windows in [&at_level[..], &off[..]] {
+        assert!(!menu_stop(windows, POINTER, WIDE_CURSOR_LEVEL, EDITOR_PID));
+        let c = check_at(windows, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+        assert_eq!(
+            smart_check(&c, lookup(&apps)),
+            CheckDecision::HideEverything
+        );
+    }
+}
+
+// D5 step 3 near miss: one level below the cursor level counts, so that menu stops the check.
+#[test]
+fn d5_step3_window_one_below_cursor_level_stops() {
+    let windows = [
+        window(WIDE_CURSOR_LEVEL - 1, covering(), EDITOR_PID),
+        window(0, covering(), EDITOR_PID),
+    ];
+    assert!(menu_stop(&windows, POINTER, WIDE_CURSOR_LEVEL, EDITOR_PID));
+    let apps = apps_with(&[editor_active()]);
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+    assert_eq!(smart_check(&c, lookup(&apps)), CheckDecision::NoChange);
+}
+
+// D5 step 3, menu_stop directly: a window above layer 0 that the clicked app owns and that
+// contains the pointer stops the check; layer 0 and below do not.
+#[test]
+fn d5_menu_stop_direct_layers() {
+    for layer in [1, 8, 101] {
+        let windows = [window(layer, covering(), EDITOR_PID)];
+        assert!(
+            menu_stop(&windows, POINTER, WIDE_CURSOR_LEVEL, EDITOR_PID),
+            "layer {layer}"
+        );
+    }
+    for layer in [0, -1, -20] {
+        let windows = [window(layer, covering(), EDITOR_PID)];
+        assert!(
+            !menu_stop(&windows, POINTER, WIDE_CURSOR_LEVEL, EDITOR_PID),
+            "layer {layer}"
+        );
+    }
+}
+
+// D5 step 3, menu_stop directly: windows of other processes never stop, and an empty list does
+// not either.
+#[test]
+fn d5_menu_stop_direct_other_processes_and_empty_list() {
+    let windows = [
+        window(101, covering(), MENU_PID),
+        window(20, full_display(), DOCK_PID),
+        window(21, full_display(), NOTIFICATION_CENTER_PID),
+        window(18, full_display(), WINDOW_MANAGER_PID),
+    ];
+    assert!(!menu_stop(&windows, POINTER, WIDE_CURSOR_LEVEL, EDITOR_PID));
+    assert!(!menu_stop(&[], POINTER, WIDE_CURSOR_LEVEL, EDITOR_PID));
+}
+
+// D5 step 3, menu_stop directly: the cursor level and the containment test both apply.
+#[test]
+fn d5_menu_stop_direct_cursor_level_and_containment() {
+    let at_level = [window(WIDE_CURSOR_LEVEL, covering(), EDITOR_PID)];
+    let just_below = [window(WIDE_CURSOR_LEVEL - 1, covering(), EDITOR_PID)];
+    let off = [window(101, off_pointer(), EDITOR_PID)];
+    assert!(!menu_stop(
+        &at_level,
+        POINTER,
+        WIDE_CURSOR_LEVEL,
+        EDITOR_PID
+    ));
+    assert!(menu_stop(
+        &just_below,
+        POINTER,
+        WIDE_CURSOR_LEVEL,
+        EDITOR_PID
+    ));
+    assert!(!menu_stop(&off, POINTER, WIDE_CURSOR_LEVEL, EDITOR_PID));
+}
+
+// ---------------------------------------------------------------------------
+// D5 step 4: the active app
+// ---------------------------------------------------------------------------
+
+// D5 step 4 and R16: the clicked app hides everything only when it is active and regular.
+#[test]
+fn d5_step4_only_active_regular_hides() {
+    let windows: [Window; 0] = [];
+    let states = [
+        (false, ActivationPolicy::Regular),
+        (true, ActivationPolicy::Accessory),
+        (true, ActivationPolicy::Prohibited),
+        (false, ActivationPolicy::Accessory),
+        (false, ActivationPolicy::Prohibited),
+    ];
+    for (active, policy) in states {
+        let apps = apps_with(&[(EDITOR_PID, app(Some("com.example.editor"), active, policy))]);
+        let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+        assert_eq!(
+            smart_check(&c, lookup(&apps)),
+            CheckDecision::NoChange,
+            "active {active}, {policy:?}"
+        );
+    }
+    let apps = apps_with(&[editor_active()]);
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(EDITOR_PID));
+    assert_eq!(
+        smart_check(&c, lookup(&apps)),
+        CheckDecision::HideEverything
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D10 scenarios (macOS 27 run, 2026-10-18)
+// ---------------------------------------------------------------------------
+
+/// The windows over a desktop click: Notification Center's layer-21 overlay, the Dock's layer-20
+/// overlay and WindowManager's desktop-level window, all full display.
+fn desktop_windows() -> [Window; 3] {
+    [
+        window(21, full_display(), NOTIFICATION_CENTER_PID),
+        window(20, full_display(), DOCK_PID),
+        window(DESKTOP_LAYER, full_display(), WINDOW_MANAGER_PID),
+    ]
+}
+
+// D10 scenario, D5 steps 1 and 4: a desktop click whose hit test is an active Finder hides, with
+// the Notification Center and Dock overlays in front. This also holds after a Notification Center
+// widget click, since no other process's window can stop the check.
+#[test]
+fn d10_desktop_click_with_active_finder_hides_under_overlays() {
+    let windows = desktop_windows();
+    let apps = apps_with(&[
+        notification_center(),
+        active_regular(FINDER_PID, "com.apple.finder"),
+    ]);
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(FINDER_PID));
+    assert_eq!(
+        smart_check(&c, lookup(&apps)),
+        CheckDecision::HideEverything
+    );
+}
+
+// D10 near miss: the same desktop click without a hit test has no layer-0 window to name the app,
+// so no change. The hit test is what makes the desktop click work.
+#[test]
+fn d10_desktop_click_without_hit_test_gives_no_change() {
+    let windows = desktop_windows();
+    let apps = apps_with(&[
+        notification_center(),
+        active_regular(FINDER_PID, "com.apple.finder"),
+    ]);
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, None);
+    assert_eq!(smart_check(&c, lookup(&apps)), CheckDecision::NoChange);
+}
+
+// D10 scenario, D5 step 1 and step 3: a Notification Center widget click (hit test: an accessory
+// app) gives no change.
+#[test]
+fn d10_notification_center_widget_click_gives_no_change() {
+    let windows = desktop_windows();
+    let apps = apps_with(&[notification_center()]);
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(NOTIFICATION_CENTER_PID));
+    assert_eq!(smart_check(&c, lookup(&apps)), CheckDecision::NoChange);
+}
+
+// D10 scenario, D5 step 3: a click in an open menu of the active app gives no change, whether the
+// hit test or the fallback names the app. The menu is the Apple menu (frontmost app) or Finder's
+// Go menu, both at layer 101.
+#[test]
+fn d10_click_in_open_menu_of_active_app_gives_no_change() {
+    for owner in [EDITOR_PID, FINDER_PID] {
+        let windows = [
+            window(101, covering(), owner),
+            window(20, full_display(), DOCK_PID),
+            window(0, covering(), owner),
+        ];
+        let apps = apps_with(&[
+            active_regular(EDITOR_PID, "com.example.editor"),
+            active_regular(FINDER_PID, "com.apple.finder"),
+        ]);
+        let hit = check_at(&windows, WIDE_CURSOR_LEVEL, Some(owner));
+        assert_eq!(
+            smart_check(&hit, lookup(&apps)),
+            CheckDecision::NoChange,
+            "hit test, owner {owner}"
+        );
+        let fallback = check_at(&windows, WIDE_CURSOR_LEVEL, None);
+        assert_eq!(
+            smart_check(&fallback, lookup(&apps)),
+            CheckDecision::NoChange,
+            "fallback, owner {owner}"
+        );
+    }
+}
+
+// D10 scenario, D5 steps 1 and 4: a click on a window of an inactive app under the Dock's
+// full-display layer-20 window gives no change. This is the case the first D5 got wrong.
+fn d10_windows() -> [Window; 4] {
+    [
+        window(20, full_display(), DOCK_PID),
+        window(0, covering(), TEXTEDIT_PID),
+        window(DESKTOP_LAYER, full_display(), WINDOW_MANAGER_PID),
+        window(SERVER_LAYER, full_display(), UNKNOWN_PID),
+    ]
+}
+
+// D10 scenario, D5 steps 1 to 3: the inactive layer-0 app gives no change, by hit test and by
+// fallback.
+#[test]
+fn d10_inactive_textedit_under_dock_layer_20_gives_no_change() {
+    let windows = d10_windows();
+    let apps = apps_with(&[textedit(false)]);
+    let hit = check_at(&windows, WIDE_CURSOR_LEVEL, Some(TEXTEDIT_PID));
+    assert_eq!(smart_check(&hit, lookup(&apps)), CheckDecision::NoChange);
+    let no_hit = check_at(&windows, WIDE_CURSOR_LEVEL, None);
+    assert_eq!(smart_check(&no_hit, lookup(&apps)), CheckDecision::NoChange);
+}
+
+// D10 near miss: the same click with TextEdit active hides everything (D5 step 4, R16).
+#[test]
+fn d10_active_textedit_under_dock_layer_20_hides_everything() {
+    let windows = d10_windows();
+    let apps = apps_with(&[textedit(true)]);
+    let c = check_at(&windows, WIDE_CURSOR_LEVEL, Some(TEXTEDIT_PID));
+    assert_eq!(
+        smart_check(&c, lookup(&apps)),
+        CheckDecision::HideEverything
+    );
 }
 
 // R14: an owner process with no running app ends the check with no change.
@@ -1029,17 +1693,21 @@ fn r16_app_without_bundle_id_uses_active_and_regular_rule() {
     );
 }
 
-// R16 check order: the app lookup happens for a clicked window with a running owner.
+// D5 step 4 and the API: the app lookup runs once per check, with the clicked process ID.
 #[test]
-fn r16_lookup_called_once_for_clicked_window_owner() {
+fn d5_step4_app_lookup_runs_once_with_clicked_pid() {
     let windows = [window(0, covering(), EDITOR_PID)];
     let calls = Cell::new(0);
+    let seen = Cell::new(None);
     let apps = editor_apps();
-    let _ = smart_check(&check(&windows), |pid| {
+    let decision = smart_check(&check(&windows), |pid| {
         calls.set(calls.get() + 1);
+        seen.set(Some(pid));
         lookup(&apps)(pid)
     });
+    assert_eq!(decision, CheckDecision::HideEverything);
     assert_eq!(calls.get(), 1);
+    assert_eq!(seen.get(), Some(EDITOR_PID));
 }
 
 // ---------------------------------------------------------------------------

@@ -82,13 +82,15 @@ it (see [Differences from Ice](#differences-from-ice)).
   page and an About page.
 - **Auto-rehide.** Shown items hide again under one of three strategies,
   as in Ice. Smart, the default for new installs, hides them 250 ms after a
-  click outside the menu bar lands on a window of the active app or on the
-  Dock, or moves you to another Space. Timed hides them after an idle
-  interval (15 s by default, 5 to 60 s) while the pointer is outside the
-  menu bar and no menu or panel is open. Focused app hides them when you
-  switch apps. Installs that already stored auto-rehide settings keep Timed.
-  Smart and Focused app pass their spec tests but have not been tried on a
-  live menu bar yet.
+  click outside the menu bar lands on the active app, the desktop or the
+  Dock, or moves you to another Space; a click inside an open menu does not
+  hide them. It asks Accessibility which app took the click. Timed hides
+  them after an idle interval (15 s by default, 5 to 60 s) while the
+  pointer is outside the menu bar and no menu or panel is open. Focused app
+  hides them when you switch apps. Installs that already stored auto-rehide
+  settings keep Timed.
+  Smart and Focused app were tried with synthetic clicks in a macOS 27
+  virtual machine, not yet on macOS 26.
 - **Icon styles.** Choose the icon on the General page: the ice-rust logo
   (the default), Dot, Ellipsis, Ellipsis Circle, Chevron, Arrow, Eye, Door,
   Sunglasses, Snowflake, Grid, Star, or an image file of your own. Each built-in style
@@ -117,7 +119,7 @@ of this repository.
 | Show hidden items when hovering over the menu bar | Yes | Yes | Off by default, delay 0 to 1 s. Hides again on leaving only items that hovering showed. Needs Accessibility. |
 | Show hidden items when an empty area in the menu bar is clicked | Yes | Yes | Option-click shows the always-hidden items. Needs Accessibility. |
 | Show hidden items by scrolling or swiping in the menu bar | Yes | Yes | Down or right shows, up or left hides, the same way with natural scrolling on or off. |
-| Automatically rehide menu bar items | Yes | Yes | Smart, Timed (5 to 60 s, held while a menu or panel is open) and Focused app. Smart finds the clicked window without titles, so it needs no Screen Recording. |
+| Automatically rehide menu bar items | Yes | Yes | Smart, Timed (5 to 60 s, held while a menu or panel is open) and Focused app. Smart asks Accessibility which app took a click, so it needs no Screen Recording. |
 | Hide application menus when they overlap with shown items | Yes | Yes | "Hide app menus" on the Hidden Items page, on by default, for Use Ice Bar off. Needs Accessibility. |
 | Drag and drop interface to arrange individual items | Yes | Yes | Moves on-screen items only: the sections involved are revealed first. |
 | Display hidden items in a separate bar (Ice Bar) | Yes | Yes | Clicking an image reveals the whole section, then clicks the real item. |
@@ -373,10 +375,11 @@ and runtime observations.
 - ice-rust has no search or menu bar appearance settings. Its Settings
   window has no Appearance or Updates page; the update settings are on the
   General page.
-- Smart rehide finds the clicked window by its layer, not its title, so it
-  works without Screen Recording, and a click inside an open menu does not
-  rehide. Focused app needs "Automatically rehide" on, and does not count
-  ice-rust activating itself to hide app menus as an app switch. Part B of
+- Smart rehide asks Accessibility which app took the click instead of
+  reading window titles, so it works without Screen Recording, and a click
+  inside an open menu does not rehide. Focused app needs "Automatically
+  rehide" on, and does not count ice-rust becoming the active app (to hide
+  app menus, or for its Settings window) as an app switch. Part B of
   [SPEC.md](docs/clean-room/smart-rehide/SPEC.md) lists every change from Ice.
 - Discovery uses only the public window list and window geometry. Ice uses
   private CoreGraphics calls for the menu bar window list, spaces and the

@@ -1,11 +1,11 @@
 //! Smart and focused-app rehide (`docs/clean-room/smart-rehide/SPEC.md`;
 //! rule and decision IDs refer to it). `crate::rehide_policy` decides; this
 //! module watches left clicks and the frontmost app, reads the active
-//! Space, the pointer, the window list and the running apps, and runs the
-//! hide action.
+//! Space, the pointer, the window list, the accessibility hit test and the
+//! running apps, and runs the hide action.
 
 use std::cell::{Cell, RefCell};
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -14,8 +14,9 @@ use objc2_app_kit::{
     NSApplicationActivationPolicy, NSEvent, NSEventMask, NSRunningApplication, NSWorkspace,
     NSWorkspaceApplicationKey, NSWorkspaceDidActivateApplicationNotification,
 };
+use objc2_core_foundation::{CFRetained, CFType};
 use objc2_core_graphics::{CGEvent, CGEventField, CGWindowLevelForKey, CGWindowLevelKey};
-use objc2_foundation::{NSNotification, NSOperationQueue, NSString};
+use objc2_foundation::{NSNotification, NSOperationQueue};
 
 use super::Controller;
 use super::triggers::near_menu_bar;
@@ -24,9 +25,8 @@ use crate::input_tag::is_ours;
 use crate::model::{FIELD_EVENT_SOURCE_USER_DATA, Rect};
 use crate::platform::{events, timer, windows};
 use crate::rehide_policy::{
-    self, ActivationPolicy, CheckDecision, ClickDecision, ClickTarget, DOCK_BUNDLE_ID,
-    DividerState, FocusChange, FocusDecision, HIDE_ORDER, MenuBar, Pid, RunningApp, SmartCheck,
-    SmartClick, SpaceId,
+    self, ActivationPolicy, CheckDecision, ClickDecision, ClickTarget, DividerState, FocusChange,
+    FocusDecision, HIDE_ORDER, MenuBar, Pid, RunningApp, SmartCheck, SmartClick, SpaceId,
 };
 use crate::sections::{MenuBarState, Section};
 
@@ -43,12 +43,74 @@ unsafe extern "C" {
     fn CGSGetActiveSpace(connection: i32) -> u64;
 }
 
+// HIServices/AXUIElement.h, for the D5 hit test:
+//   extern AXUIElementRef AXUIElementCreateSystemWide(void);
+//   extern AXError AXUIElementSetMessagingTimeout(AXUIElementRef element,
+//       float timeoutInSeconds);
+//   extern AXError AXUIElementCopyElementAtPosition(
+//       AXUIElementRef application, float x, float y,
+//       AXUIElementRef *element);
+//   extern AXError AXUIElementGetPid(AXUIElementRef element, pid_t *pid);
+// AXUIElementRef is a CFTypeRef and AXError an int32_t.
+// SAFETY: the declarations below match that header.
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn AXUIElementCreateSystemWide() -> *mut CFType;
+    fn AXUIElementSetMessagingTimeout(element: &CFType, timeout: f32) -> i32;
+    fn AXUIElementCopyElementAtPosition(
+        application: &CFType,
+        x: f32,
+        y: f32,
+        element: *mut *mut CFType,
+    ) -> i32;
+    fn AXUIElementGetPid(element: &CFType, pid: *mut i32) -> i32;
+}
+
+const AX_SUCCESS: i32 = 0;
+/// D5: the longest wait for the hit test's answer, so a hung app stalls
+/// the main thread for a moment at most.
+const HIT_TEST_TIMEOUT: f32 = 0.25;
+
 /// R7, R10: the window server's active Space for ice-rust's main
 /// connection.
 fn active_space() -> SpaceId {
     // SAFETY: neither function takes a pointer, and the connection is the
     // one the window server opened for this process.
     unsafe { CGSGetActiveSpace(CGSMainConnectionID()) }
+}
+
+/// D5 step 1: the process of the app that owns the accessibility element
+/// at `pointer` (CG space, the coordinates the hit test takes), from a hit
+/// test on the system-wide element. A timeout set on that element applies
+/// to the whole process, so it is set for this call only and then reset to
+/// the default (0), leaving ice-rust's other Accessibility reads as they
+/// were. Any failure (no Accessibility permission, an error or a timeout)
+/// is `None`.
+fn hit_test_pid(pointer: (f64, f64)) -> Option<Pid> {
+    // SAFETY: the Create rule makes us the owner; a null result is handled.
+    let system = NonNull::new(unsafe { AXUIElementCreateSystemWide() })
+        .map(|system| unsafe { CFRetained::from_raw(system) })?;
+    let mut element: *mut CFType = ptr::null_mut();
+    // SAFETY: `system` is a live AXUIElement and `element` a valid out
+    // pointer, which receives a +1 reference on success.
+    let err = unsafe {
+        AXUIElementSetMessagingTimeout(&system, HIT_TEST_TIMEOUT);
+        let err = AXUIElementCopyElementAtPosition(
+            &system,
+            pointer.0 as f32,
+            pointer.1 as f32,
+            &mut element,
+        );
+        AXUIElementSetMessagingTimeout(&system, 0.0);
+        err
+    };
+    // SAFETY: the Copy rule makes us the owner of the returned reference.
+    let element = NonNull::new(element).map(|element| unsafe { CFRetained::from_raw(element) });
+    let element = element.filter(|_| err == AX_SUCCESS)?;
+    let mut pid = 0;
+    // SAFETY: `element` is a live AXUIElement and `pid` a valid out pointer.
+    let err = unsafe { AXUIElementGetPid(&element, &mut pid) };
+    (err == AX_SUCCESS).then_some(pid)
 }
 
 /// D6: whether ice-rust posted `event`. Every event it posts carries a tag
@@ -61,18 +123,9 @@ fn posted_by_app(event: &NSEvent) -> bool {
     })
 }
 
-/// D5: the Dock's process, when it runs.
-fn dock_pid() -> Option<Pid> {
-    NSRunningApplication::runningApplicationsWithBundleIdentifier(&NSString::from_str(
-        DOCK_BUNDLE_ID,
-    ))
-    .iter()
-    .next()
-    .map(|app| app.processIdentifier())
-}
-
-/// R14 to R16: what smart rehide reads about the running app with process
-/// ID `pid`. A policy other than regular or accessory counts as prohibited.
+/// R14 to R16: the lookup from process ID to running app, `None` when no
+/// app runs with `pid`. A policy other than regular or accessory counts as
+/// prohibited.
 fn running_app(pid: Pid) -> Option<RunningApp> {
     let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?;
     let policy = match app.activationPolicy() {
@@ -184,17 +237,20 @@ impl Controller {
         });
     }
 
-    /// R9 to R17, after the wait. The settings are not read again (R9).
-    /// The window list is read once per check (D7).
+    /// R9 to R17 with D5, after the wait. The settings are not read again
+    /// (R9). The window list is read once per check (D7). The hit test
+    /// runs here, on the main thread, at the pointer read after the wait;
+    /// without a pointer there is nothing to test.
     fn smart_check(&self, snapshot: SpaceId) {
         let windows = windows::list_on_screen_owners();
+        let pointer = events::pointer_location();
         let check = SmartCheck {
             snapshot_space: snapshot,
             current_space: active_space(),
-            pointer: events::pointer_location(),
+            pointer,
             windows: &windows,
             cursor_level: CGWindowLevelForKey(CGWindowLevelKey::CursorWindowLevelKey),
-            dock: dock_pid(),
+            hit_test: pointer.and_then(hit_test_pid),
         };
         if rehide_policy::smart_check(&check, running_app) == CheckDecision::HideEverything {
             self.run_hide(&HIDE_ORDER);

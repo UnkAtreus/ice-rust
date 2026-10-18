@@ -456,7 +456,9 @@ numbers for every claim, is kept outside this repository.
 ## Part B: ice-rust design (decisions, not Ice behavior)
 
 Decided with the owner on 2026-10-18. D1, D2, D3, D5 and D6 were
-confirmed one by one; the others stand as written.
+confirmed one by one; the others stand as written. D5 was revised twice
+the same day, with the owner's approval, after D10 runs showed that the
+earlier versions did not hold.
 
 - **D1. Default strategy.** Ice defaults to Smart. ice-rust users today get
   Timed behavior. Decision: fresh installs default to Smart; an install
@@ -473,16 +475,39 @@ confirmed one by one; the others stand as written.
   pointer-in-menu-bar test, which already works on macOS 27, in place of
   M1's icon-frame heuristic, measured on the screen under the pointer
   (FK6, fixes Q7).
-- **D5. Which window was clicked (Q2, Q6).** Options:
-  (a) Ice's rule (R13), which needs window titles and so Screen
-  Recording; (b) FK3, which needs no titles. Decision: (b), with one
-  change for Q6: walk the windows front to back as FK3 does, but when the
-  first window under the pointer is above layer 0 and not the Dock's (a
-  menu, a pop-up, a status item panel), stop with no change instead of
-  passing over it. Other apps' desktop-level windows are still passed over,
-  so a click on the desktop reaches the Dock's wallpaper window and
-  rehides by R15 (holzBar's comment says the wallpaper is a Dock window;
-  to confirm in a test).
+- **D5. Which app was clicked (Q2, Q6).** Revised twice after D10 runs.
+  The first version took FK3's window rule (no titles) with a stop for
+  menus and relied on the window list alone. The second added an
+  accessibility hit test but kept a list of system windows to pass over,
+  and macOS showed more full-display overlays than the list held. The D10
+  results below show both failures. Ice's rule (R13) is not used either,
+  since it needs window titles and so Screen Recording. Decision, run
+  after the wait:
+  1. *Clicked app.* The process ID that an accessibility hit test at the
+     pointer returns (the app that owns the element under the pointer,
+     from `AXUIElementCopyElementAtPosition` on the system-wide element),
+     read after the wait like the pointer (R11). When the hit test gives
+     nothing (no Accessibility permission, an error or a timeout), the
+     owner of the first window at layer 0, front to back, below the cursor
+     level (R12), that contains the pointer. When neither exists, no
+     change. A process ID with no running app gives no change (R14).
+  2. *Dock.* When the clicked app has the Dock's bundle identifier, hide
+     everything (R15).
+  3. *Menu stop (Q6).* Among the on-screen windows below the cursor level
+     that contain the pointer, take the first one, front to back, that the
+     clicked app owns. When it is above layer 0 (a menu, a pop-up or a
+     panel of that app), no change. Windows of other processes play no
+     part, so their overlays (the full-display windows of the Dock,
+     Notification Center or WindowManager) can neither stop nor decide a
+     check.
+  4. *Active app.* Otherwise hide everything when the clicked app is
+     active with the regular policy (R16), and make no change when it is
+     not.
+  The hit test must not stall the main thread: give the system-wide
+  element a messaging timeout of 0.25 s before the call, and treat a
+  timeout as no result. Titles play no part, so Screen Recording is not
+  needed; the hit test needs Accessibility, which ice-rust already asks
+  for (Show on click).
 - **D6. Own clicks.** Decision: adopt FK5. Clicks that ice-rust posts (the
   Command-drag moves of Menu Bar Layout) never trigger smart rehide.
 - **D7. Not adopted.** Thaw's app-switch trigger and timed fallback for
@@ -493,10 +518,39 @@ confirmed one by one; the others stand as written.
   domain, so the meaning matches Ice.
 - **D9. Settings UI.** The Strategy picker joins "Automatically rehide" on
   the Hidden Items page, with the S3 visibility rules and descriptions.
-- **D10. macOS 27.** No rule changes. Before release, confirm in the
-  macOS 27 VM that app windows report layer 0 and bounds, that the desktop
-  wallpaper is a Dock window, and that clicks in the menu bar are excluded
-  by D4.
+- **D10. macOS 27.** Run on 2026-10-18 in three rounds, one per version
+  of D5; results below. The current D5 passed every case in the macOS 27
+  VM.
+
+### D10 results (2026-10-18)
+
+Setup: the macOS 27.0.1 VM, a build of the first rebuild with a debug log
+of every decision (not committed), synthetic left clicks posted at the HID
+event tap by a helper app, and on-screen window lists from
+`CGWindowListCopyWindowInfo`. The developer's Mac (macOS 26.7.1) was
+compared by its window list only, with no input.
+
+| Check | Result |
+| --- | --- |
+| D1: `AutoRehide` stored, no `RehideStrategy` | The Hidden Items page shows Timed with the interval. |
+| D4: a click on the icon or on a menu title | Dropped (pointer in the menu bar). |
+| Q6: a click on a separator in Finder's Go menu (menu window at layer 101) | No change; the items stayed shown. |
+| F1 to F4: the frontmost app changed with `open -a` | Hidden about 100 ms later; dropped while the pointer was in the menu bar (F3). |
+| D3: ice-rust's Settings opened, so ice-rust became frontmost | Dropped; the items stayed shown. Back to Finder (the last other app): dropped. Then TextEdit: hidden. |
+| "Hide app menus" on macOS 27 | Not available there, so Q5 cannot occur on macOS 27; D3 was exercised through Settings. |
+| D5 as first written | Failed. The Dock owns an on-screen window at layer 20 that covers the whole display, in front of every app window. The walk picked it for every click outside a menu, so smart rehide hid on any click, including clicks that should not hide. The macOS 26.7.1 Mac has the same window (layer 20, the full 2560 x 1440 display). |
+| Desktop windows | On macOS 26 the windows at layer -2147483624 belong to the Dock. On macOS 27 the window at that layer belongs to WindowManager and the bottom one (layer -2147483626) to the window server, so the desktop is not a Dock window there. After a desktop click, WindowManager also shows a full-display window at layer 18. |
+| D5 second version (hit test plus a list of system windows) | Right for the active app's window, the desktop (hit test: Finder, active after the click), a Dock icon (hit test: Dock), a Notification Center widget (no change; Notification Center is an accessory app) and a separator in the open Apple menu (no change). Wrong after the widget click: Notification Center then kept a full-display window at layer 21, which was not on the list, so it stopped every later check and a desktop click no longer hid. |
+| D5 current version (the clicked app's own windows decide the menu stop) | Right in every case, with Notification Center's layer-21 window and the Dock's layer-20 window on screen: a desktop click (hit test: Finder, active) hid; a click on a TextEdit window that activated TextEdit hid; a Dock icon (hit test: Dock) hid; a Notification Center widget gave no change; a separator in the open Apple menu gave no change although the frontmost app (Calendar) was active and regular; the desktop click that closed that menu hid. |
+| A click right after a desktop click | macOS 27 moves the windows aside on a desktop click, and the next click only brings them back: it did not activate the app under it, so that check gave no change. Ice's rule gives the same, since the app is not active 250 ms later. |
+| R11: a click on the active TextEdit, then the pointer moved onto a Notification Center widget 30 ms later | The check read the pointer at the widget after the wait (hit test: Notification Center) and made no change. The same click without the move hid. |
+| R10: Space switches with Control-Left and Control-Right (a full-screen TextEdit made the second Space) | The active Space ID changed 545 to 570 ms after the key, at the end of the animation, and a click sent during the animation reached no event monitor. A click 30 ms before the switch was checked while the Space ID was still the old one, so R10 did not fire. Setting Reduce Motion with `defaults` and restarting the Dock did not shorten the switch. No input in the VM made R10 fire; its rule is covered by the spec tests only. |
+| D6: a drag in Menu Bar Layout | The three clicks that ice-rust posted to move the item were each recognized as its own and dropped. They were in the menu bar, so D4 would have dropped them as well. The drag's own mouse-down in Settings led to a hide that was skipped because a move held the sections. |
+| Who owns a menu window | The app whose menu it is: Finder's Go menu (layer 101) belonged to Finder, and the Apple menu's window belonged to the frontmost app (Calendar), the same process the hit test returned. |
+| Accessibility hit test | A TextEdit text area: TextEdit (`AXTextArea`). The desktop: Finder (`AXGroup`). Dock icons: Dock (`AXDockItem`). A Notification Center widget: Notification Center. The menu bar: the frontmost app's `AXMenuBar`. Each is the app that takes the click. |
+
+Not covered: R10 firing on a real Space change (see above), a posted
+click outside the menu bar for D6, and any run with input on macOS 26.
 
 ### Testable boundary
 
@@ -510,10 +564,10 @@ separate a pure decision from the platform reads:
   ID.
 - Smart, after 250 ms: inputs are the snapshot Space ID, the current Space
   ID, the pointer location (or none), the window list front to back
-  (layer, bounds, owner process ID, and title if rule (a) of D5 is kept),
-  the cursor level, and the Dock's process ID, plus a lookup from process
-  ID to bundle identifier, active flag and activation policy. Output: hide
-  everything, or no change.
+  (layer, bounds, owner process ID), the cursor level, the hit-test
+  process ID (or none), and a lookup from process ID to bundle identifier,
+  active flag and activation policy (none when no app runs with that ID).
+  Output: hide everything, or no change.
 - Focused app: inputs are the settings, the new frontmost process ID,
   ice-rust's own process ID, the last frontmost process ID other than
   ice-rust (D3), and whether the pointer is in the menu bar. Output: drop,

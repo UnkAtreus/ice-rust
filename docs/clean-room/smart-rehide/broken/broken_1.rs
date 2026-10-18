@@ -1,4 +1,4 @@
-// Broken version 1: violates R16. smart_check hides everything for any regular app window, because the check that the app is active is dropped.
+// Broken version 1: violates D5. The Dock check runs after the menu stop, so a click on the Dock is stopped by the Dock's own full-display window at layer 20.
 //! Smart and focused-app rehide decisions, rebuilt from
 //! `docs/clean-room/smart-rehide/SPEC.md`. Rule and decision IDs in the
 //! comments (S2, R10, D5 and so on) refer to that spec. Every input is plain
@@ -9,8 +9,8 @@
 
 use std::time::Duration;
 
-/// R12, R13: window bounds (`x`, `y`, `width`, `height`), with the
-/// half-open `contains` that `clicked_window` uses.
+/// R12, D5: window bounds (`x`, `y`, `width`, `height`), with the
+/// half-open `contains` that `menu_stop` and `clicked_app` use.
 pub use crate::model::Rect;
 /// Terms: the visible, hidden and always-hidden sections.
 pub use crate::sections::Section;
@@ -27,10 +27,11 @@ pub const SMART_CHECK_DELAY: Duration = Duration::from_millis(250);
 /// F4: how long focused-app rehide waits before it hides.
 pub const FOCUS_HIDE_DELAY: Duration = Duration::from_millis(100);
 
-/// R15: the Dock's bundle identifier.
+/// R15, D5 step 2: the Dock's bundle identifier.
 pub const DOCK_BUNDLE_ID: &str = "com.apple.dock";
 
-/// D5: the layer of normal app windows (`kCGNormalWindowLevel`).
+/// D5: the layer of normal app windows (`kCGNormalWindowLevel`). Step 1
+/// falls back to a window at it; step 3 stops above it.
 pub const NORMAL_WINDOW_LAYER: i32 = 0;
 
 /// R17: the order in which "hide everything" runs the hide action.
@@ -380,11 +381,11 @@ pub enum ActivationPolicy {
     Prohibited,
 }
 
-/// R14 to R16: what smart rehide reads about the app that owns the clicked
-/// window.
+/// R14 to R16 and D5: what the lookup from a process ID returns about the
+/// running app with that ID, read for the clicked app only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunningApp {
-    /// R15.
+    /// R15, D5 step 2.
     pub bundle_id: Option<String>,
     /// R16: the app is active (frontmost).
     pub active: bool,
@@ -406,8 +407,10 @@ pub struct SmartCheck<'a> {
     pub windows: &'a [Window],
     /// R12: the cursor window level (`CGWindowLevelForKey(19)`).
     pub cursor_level: i32,
-    /// D5: the Dock's process ID, `None` when the Dock is not running.
-    pub dock: Option<Pid>,
+    /// D5 step 1: the process ID that the accessibility hit test at the
+    /// pointer returned after the wait, `None` when it gave nothing (no
+    /// Accessibility permission, an error or a timeout).
+    pub hit_test: Option<Pid>,
 }
 
 /// What the smart check decides.
@@ -415,47 +418,60 @@ pub struct SmartCheck<'a> {
 pub enum CheckDecision {
     /// Run `hide_everything` (R10, R15, R16).
     HideEverything,
-    /// Leave the menu bar as it is (R11, R13, R14, R16, D5).
+    /// Leave the menu bar as it is (R11, R14, R16, D5).
     NoChange,
 }
 
-/// D5, rule (b): the window a click is judged by, or `None` for no change.
-/// Candidates are the windows with a layer below `cursor_level` (R12).
-/// Walking them front to back, only those whose bounds contain `pointer`
-/// count (`Rect::contains`: the minimum edges are inside, the maximum edges
-/// are not). The first of those that is at `NORMAL_WINDOW_LAYER` or owned
-/// by `dock` is the clicked window. One above that layer and not the
-/// Dock's (a menu, a pop-up, a status item panel) ends the walk with
-/// `None`. One below that layer and not the Dock's (another app's
-/// desktop-level window) is passed over. Titles play no part.
-pub fn clicked_window(
+/// D5 step 1: the clicked app's process ID, or `None` for no change. It is
+/// `hit_test` when that is `Some`. Otherwise it is the owner of the first
+/// window, front to back, at `NORMAL_WINDOW_LAYER` and below
+/// `cursor_level` (R12) whose bounds contain `pointer` (`Rect::contains`:
+/// the minimum edges are inside, the maximum edges are not).
+pub fn clicked_app(
     windows: &[Window],
     pointer: (f64, f64),
     cursor_level: i32,
-    dock: Option<Pid>,
-) -> Option<&Window> {
+    hit_test: Option<Pid>,
+) -> Option<Pid> {
     let (x, y) = pointer;
-    for window in windows {
-        if window.layer >= cursor_level || !window.bounds.contains(x, y) {
-            continue;
-        }
-        if window.layer == NORMAL_WINDOW_LAYER || dock == Some(window.owner) {
-            return Some(window);
-        }
-        if window.layer > NORMAL_WINDOW_LAYER {
-            return None;
-        }
-    }
-    None
+    hit_test.or_else(|| {
+        windows
+            .iter()
+            .find(|window| {
+                window.layer == NORMAL_WINDOW_LAYER
+                    && window.layer < cursor_level
+                    && window.bounds.contains(x, y)
+            })
+            .map(|window| window.owner)
+    })
+}
+
+/// D5 step 3, the menu stop (Q6): whether the check ends with no change.
+/// Of the windows with a layer below `cursor_level` (R12) whose bounds
+/// contain `pointer`, the first one front to back that `clicked` owns
+/// decides: true above `NORMAL_WINDOW_LAYER` (a menu, a pop-up or a panel
+/// of the clicked app), false at or below it. False when the clicked app
+/// owns no such window. Other processes' windows play no part, and titles
+/// play none either.
+pub fn menu_stop(windows: &[Window], pointer: (f64, f64), cursor_level: i32, clicked: Pid) -> bool {
+    let (x, y) = pointer;
+    windows
+        .iter()
+        .find(|window| {
+            window.owner == clicked && window.layer < cursor_level && window.bounds.contains(x, y)
+        })
+        .is_some_and(|window| window.layer > NORMAL_WINDOW_LAYER)
 }
 
 /// Smart rehide after the wait. A changed Space hides everything without
 /// further checks (R10). Otherwise there is no change when the pointer
-/// cannot be read (R11), no window qualifies (`clicked_window`), or `app`
-/// finds no running app for the window's owner (R14). The Dock's windows
-/// hide everything (R15); any other app's window hides everything only
-/// when that app is active with the regular policy (R16). `app` is called
-/// at most once, with the clicked window's owner.
+/// cannot be read (R11), there is no clicked app (`clicked_app`, D5 step
+/// 1), or `app` finds no running app with its process ID (R14). The Dock
+/// hides everything (R15, D5 step 2). Any other app is no change when the
+/// menu stop ends the check (`menu_stop`, D5 step 3), and otherwise hides
+/// everything only when it is active with the regular policy (R16, D5 step
+/// 4). `app` is the lookup from process ID to running app; it is called at
+/// most once, with the clicked app's process ID.
 pub fn smart_check(
     check: &SmartCheck<'_>,
     app: impl Fn(Pid) -> Option<RunningApp>,
@@ -466,16 +482,19 @@ pub fn smart_check(
     let Some(pointer) = check.pointer else {
         return CheckDecision::NoChange;
     };
-    let Some(window) = clicked_window(check.windows, pointer, check.cursor_level, check.dock)
-    else {
+    let Some(pid) = clicked_app(check.windows, pointer, check.cursor_level, check.hit_test) else {
         return CheckDecision::NoChange;
     };
-    let Some(owner) = app(window.owner) else {
+    let Some(clicked) = app(pid) else {
         return CheckDecision::NoChange;
     };
-    if owner.bundle_id.as_deref() == Some(DOCK_BUNDLE_ID)
-        || owner.policy == ActivationPolicy::Regular
-    {
+    if menu_stop(check.windows, pointer, check.cursor_level, pid) {
+        return CheckDecision::NoChange;
+    }
+    if clicked.bundle_id.as_deref() == Some(DOCK_BUNDLE_ID) {
+        return CheckDecision::HideEverything;
+    }
+    if clicked.active && clicked.policy == ActivationPolicy::Regular {
         CheckDecision::HideEverything
     } else {
         CheckDecision::NoChange

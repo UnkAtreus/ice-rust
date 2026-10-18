@@ -39,7 +39,7 @@ impl Rect {
 }
 ```
 
-A window's bounds (R12, R13). `contains` is half-open, like
+A window's bounds (R12, D5). `contains` is half-open, like
 `CGRectContainsPoint`: true when `x >= self.x`, `x < self.x + self.width`,
 `y >= self.y` and `y < self.y + self.height`. A point on the minimum x or
 y edge is inside; a point on the maximum x or y edge is outside.
@@ -60,7 +60,7 @@ pub type Pid = i32;
 | --- | --- | --- | --- |
 | `SMART_CHECK_DELAY` | `Duration` | 250 ms | R8: wait between a click and its smart check |
 | `FOCUS_HIDE_DELAY` | `Duration` | 100 ms | F4: wait between a focus change and the hide |
-| `DOCK_BUNDLE_ID` | `&str` | `"com.apple.dock"` | R15: the Dock's bundle identifier |
+| `DOCK_BUNDLE_ID` | `&str` | `"com.apple.dock"` | R15 and D5 step 2: the Dock's bundle identifier |
 | `NORMAL_WINDOW_LAYER` | `i32` | `0` | D5: the layer of normal app windows |
 | `HIDE_ORDER` | `[Section; 3]` | `[Visible, Hidden, AlwaysHidden]` | R17: the order of "hide everything" |
 
@@ -323,8 +323,8 @@ pub struct Window {
 }
 ```
 
-An on-screen window (R12). There is no title field: D5 chose rule (b),
-which does not use titles.
+An on-screen window (R12). There is no title field: D5 does not use
+titles.
 
 ### `ActivationPolicy` and `RunningApp`
 
@@ -334,14 +334,16 @@ pub enum ActivationPolicy { Regular, Accessory, Prohibited }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunningApp {
-    pub bundle_id: Option<String>,   // R15
+    pub bundle_id: Option<String>,   // R15, D5 step 2
     pub active: bool,                // R16: the app is active (frontmost)
     pub policy: ActivationPolicy,    // R16
 }
 ```
 
-What the check reads about the clicked window's owner (R14 to R16).
-`Regular`, `Accessory` and `Prohibited` correspond to the raw
+What the lookup from a process ID returns about the running app with that
+ID (R14 to R16, D5). The lookup is a function
+`Fn(Pid) -> Option<RunningApp>` that returns `None` when no app runs with
+that ID. `Regular`, `Accessory` and `Prohibited` correspond to the raw
 `NSApplicationActivationPolicy` values 0, 1 and 2.
 
 ### `SmartCheck`
@@ -354,9 +356,14 @@ pub struct SmartCheck<'a> {
     pub pointer: Option<(f64, f64)>,   // R11: (x, y) now, same coordinates as Window::bounds; None if unreadable
     pub windows: &'a [Window],         // R12: on-screen windows, front to back
     pub cursor_level: i32,             // R12: CGWindowLevelForKey(kCGCursorWindowLevelKey)
-    pub dock: Option<Pid>,             // D5: the Dock's process ID; None when it is not running
+    pub hit_test: Option<Pid>,         // D5 step 1: the hit test's process ID; None when it gave nothing
 }
 ```
+
+`hit_test` is the process ID of the app that owns the accessibility
+element under the pointer, read after the wait like `pointer`. It is
+`None` when the hit test gave nothing (no Accessibility permission, an
+error or a timeout).
 
 ### `CheckDecision`
 
@@ -368,31 +375,53 @@ pub enum CheckDecision { HideEverything, NoChange }
 `HideEverything`: run `hide_everything` (R10, R15, R16). `NoChange`: leave
 the menu bar as it is.
 
-### `clicked_window`
+### `clicked_app`
 
 ```rust
-pub fn clicked_window(
+pub fn clicked_app(
     windows: &[Window],
     pointer: (f64, f64),
     cursor_level: i32,
-    dock: Option<Pid>,
-) -> Option<&Window>;
+    hit_test: Option<Pid>,
+) -> Option<Pid>;
 ```
 
-D5, rule (b): the window a click is judged by, or `None` for no change.
-It walks `windows` in slice order (front to back) and skips every window
-with `layer >= cursor_level` (R12) or whose `bounds.contains(pointer.0,
-pointer.1)` is false. For the first remaining window:
+D5 step 1: the clicked app's process ID, or `None` for no change.
 
-- `layer == NORMAL_WINDOW_LAYER`, or `dock == Some(owner)`: returns
-  `Some` of that window (any layer, for the Dock's windows).
-- `layer > NORMAL_WINDOW_LAYER` and not the Dock's: returns `None` at once
-  (a menu, a pop-up, a status item panel; the Q6 change in D5).
-- `layer < NORMAL_WINDOW_LAYER` and not the Dock's: passed over; the walk
-  goes on to the next window that passes the two skips.
+- `hit_test` is `Some(pid)`: returns `Some(pid)`, whatever `windows`
+  holds.
+- `hit_test` is `None`: returns `Some(owner)` of the first window in slice
+  order (front to back) with `layer == NORMAL_WINDOW_LAYER`,
+  `layer < cursor_level` (R12) and `bounds.contains(pointer.0, pointer.1)`
+  true; `None` when there is no such window. Windows at any other layer
+  are skipped, whoever owns them.
 
-When the walk ends without a match it returns `None`. Window titles play
-no part.
+There is no lookup here: whether an app runs with the returned ID is
+`smart_check`'s concern.
+
+### `menu_stop`
+
+```rust
+pub fn menu_stop(
+    windows: &[Window],
+    pointer: (f64, f64),
+    cursor_level: i32,
+    clicked: Pid,
+) -> bool;
+```
+
+D5 step 3, the menu stop (Q6): `true` means the check ends with no change.
+It takes the first window in slice order (front to back) with
+`owner == clicked`, `layer < cursor_level` (R12) and
+`bounds.contains(pointer.0, pointer.1)` true. That window decides:
+
+- `layer > NORMAL_WINDOW_LAYER`: returns `true` (a menu, a pop-up or a
+  panel of the clicked app).
+- `layer <= NORMAL_WINDOW_LAYER`: returns `false`.
+
+When there is no such window it returns `false`. Windows owned by any
+other process are ignored, whatever their layer and bounds, so they can
+neither stop nor decide a check. Window titles play no part.
 
 ### `smart_check`
 
@@ -406,19 +435,25 @@ pub fn smart_check(
 In this order:
 
 1. R10: `current_space != snapshot_space` returns `HideEverything`, with no
-   further checks; `app` is not called.
+   further checks.
 2. R11: `pointer` is `None` returns `NoChange`.
-3. R12, R13 as changed by D5:
-   `clicked_window(windows, pointer, cursor_level, dock)` is `None`
+3. D5 step 1: `clicked_app(windows, pointer, cursor_level, hit_test)` is
+   `None` returns `NoChange`. Otherwise call its result `pid`.
+4. D5 step 1 and R14: `app(pid)` is `None` returns `NoChange`. A
+   `hit_test` ID with no running app is not replaced by a window's owner;
+   it ends the check here.
+5. D5 step 2 and R15: the app's `bundle_id` is `Some(DOCK_BUNDLE_ID)`
+   returns `HideEverything`, whatever `active`, `policy` and the windows
+   are.
+6. D5 step 3: `menu_stop(windows, pointer, cursor_level, pid)` is `true`
    returns `NoChange`.
-4. R14: `app(window.owner)` is `None` returns `NoChange`.
-5. R15: the app's `bundle_id` is `Some(DOCK_BUNDLE_ID)` returns
-   `HideEverything`.
-6. R16: `active` is true and `policy` is `ActivationPolicy::Regular`
-   returns `HideEverything`; otherwise `NoChange`.
+7. D5 step 4 and R16: `active` is true and `policy` is
+   `ActivationPolicy::Regular` returns `HideEverything`; otherwise
+   `NoChange`.
 
 `app` is the lookup from process ID to running app. It is called at most
-once, with the clicked window's owner, and only in steps 4 to 6.
+once per `smart_check`, with `pid`, in item 4 of this list; it is not
+called when items 1 to 3 end the check.
 
 ## Focused app strategy (F1 to F4, D2, D3)
 
