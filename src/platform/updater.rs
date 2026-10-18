@@ -10,10 +10,16 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSWorkspace};
-use objc2_foundation::{NSDate, NSDateFormatter, NSDateFormatterStyle, NSString, NSTimer, NSURL};
+use objc2::{MainThreadMarker, MainThreadOnly};
+use objc2_app_kit::{
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSAutoresizingMaskOptions,
+    NSBorderType, NSFont, NSScrollView, NSTextView, NSWorkspace,
+};
+use objc2_foundation::{
+    NSDate, NSDateFormatter, NSDateFormatterStyle, NSPoint, NSRect, NSSize, NSString, NSTimer,
+    NSURL,
+};
 
 use super::installer;
 use super::permissions;
@@ -283,14 +289,15 @@ impl Updater {
         let bundle = running_bundle();
         let target = precheck(bundle.as_deref(), &key, update.version, installer::writable);
         let title = prompt_title(update.version, Version::current());
-        let mut text = update.notes.clone();
-        if !text.is_empty() {
-            text.push_str("\n\n");
-        }
+        let notes = update.notes.as_str();
         match target {
             Ok(bundle) => {
-                text.push_str(PERMISSIONS_NOTE);
-                let choice = self.alert(&title, &text, &["Install", "Later", "Skip This Version"]);
+                let choice = self.alert_with_notes(
+                    &title,
+                    PERMISSIONS_NOTE,
+                    notes,
+                    &["Install", "Later", "Skip This Version"],
+                );
                 match choice {
                     0 => self.install(update, bundle),
                     2 => settings::write_string(KEY_SKIPPED_VERSION, &update.version.to_string()),
@@ -298,10 +305,10 @@ impl Updater {
                 }
             }
             Err(err) => {
-                text.push_str(&err.to_string());
-                let choice = self.alert(
+                let choice = self.alert_with_notes(
                     &title,
-                    &text,
+                    &err.to_string(),
+                    notes,
                     &["Open Release Page", "Later", "Skip This Version"],
                 );
                 match choice {
@@ -389,6 +396,12 @@ impl Updater {
     /// Shows a modal alert in front of other apps and returns the index of
     /// the button the user chose.
     fn alert(&self, title: &str, text: &str, buttons: &[&str]) -> usize {
+        self.alert_with_notes(title, text, "", buttons)
+    }
+
+    /// `alert` with release notes in a fixed-size box that scrolls, so long
+    /// notes cannot push the buttons off the screen. Empty notes add no box.
+    fn alert_with_notes(&self, title: &str, text: &str, notes: &str, buttons: &[&str]) -> usize {
         let app = NSApplication::sharedApplication(self.mtm);
         app.activate();
         if !app.isActive() {
@@ -400,10 +413,67 @@ impl Updater {
         alert.setAlertStyle(NSAlertStyle::Informational);
         alert.setMessageText(&NSString::from_str(title));
         alert.setInformativeText(&NSString::from_str(text));
+        if !notes.is_empty() {
+            alert.setAccessoryView(Some(&notes_box(self.mtm, notes)));
+        }
         for button in buttons {
             alert.addButtonWithTitle(&NSString::from_str(button));
         }
         let response = alert.runModal();
         usize::try_from(response - NSAlertFirstButtonReturn).unwrap_or(usize::MAX)
     }
+}
+
+/// Size of the release notes box in the update prompt, in points.
+const NOTES_BOX: NSSize = NSSize::new(420.0, 220.0);
+
+/// A read-only text view of `notes` inside a scroll view of
+/// `NOTES_BOX` size.
+fn notes_box(mtm: MainThreadMarker, notes: &str) -> Retained<NSScrollView> {
+    let scroll = NSScrollView::initWithFrame(
+        NSScrollView::alloc(mtm),
+        NSRect::new(NSPoint::new(0.0, 0.0), NOTES_BOX),
+    );
+    scroll.setHasVerticalScroller(true);
+    scroll.setBorderType(NSBorderType::BezelBorder);
+    scroll.setDrawsBackground(false);
+    let size = scroll.contentSize();
+    let text = NSTextView::initWithFrame(
+        NSTextView::alloc(mtm),
+        NSRect::new(NSPoint::new(0.0, 0.0), size),
+    );
+    text.setEditable(false);
+    // Not selectable: in the alert on macOS 27, a selectable text view
+    // opened scrolled halfway down.
+    text.setSelectable(false);
+    text.setDrawsBackground(false);
+    text.setFont(Some(&NSFont::systemFontOfSize(
+        NSFont::smallSystemFontSize(),
+    )));
+    text.setTextContainerInset(NSSize::new(4.0, 6.0));
+    // Apple's setup for text in a scroll view: wrap at the box's width and
+    // grow downward with the text. FLT_MAX as in Apple's sample.
+    let unbounded = f64::from(f32::MAX);
+    text.setMinSize(NSSize::new(0.0, size.height));
+    text.setMaxSize(NSSize::new(unbounded, unbounded));
+    text.setVerticallyResizable(true);
+    text.setHorizontallyResizable(false);
+    text.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+    // SAFETY: the text view was just created with its own text container.
+    let container = unsafe { text.textContainer() };
+    if let Some(container) = &container {
+        container.setContainerSize(NSSize::new(size.width, unbounded));
+        container.setWidthTracksTextView(true);
+    }
+    text.setString(&NSString::from_str(notes));
+    // Lay out all of the text now, so the view has its final height before
+    // it is shown. Asking for the layout manager moves the view to TextKit
+    // 1, whose layout is complete rather than estimated.
+    // SAFETY: as above.
+    if let (Some(layout), Some(container)) = (unsafe { text.layoutManager() }, &container) {
+        layout.ensureLayoutForTextContainer(container);
+    }
+    text.sizeToFit();
+    scroll.setDocumentView(Some(&text));
+    scroll
 }

@@ -41,8 +41,9 @@ pub const ATTEMPT_SPACING: Duration = Duration::from_secs(60 * 60);
 /// How often the app asks `check_due`. Run loop timers stop while the Mac
 /// sleeps, so the 24 h interval is measured on the wall clock instead.
 pub const DUE_POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
-/// Longest release notes text the prompt shows.
-pub const NOTES_MAX_CHARS: usize = 1500;
+/// Longest release notes text the prompt shows. The notes scroll in a
+/// fixed-size box, so this only bounds what a release body can put there.
+pub const NOTES_MAX_CHARS: usize = 4000;
 /// Largest update zip accepted, in bytes (curl's `--max-filesize 50M`).
 pub const MAX_ZIP_BYTES: u64 = 50 * 1024 * 1024;
 /// Largest signature file accepted, in bytes.
@@ -1268,12 +1269,12 @@ mod tests {
         assert_eq!(trim_notes(""), "");
         assert_eq!(trim_notes("  \n\n "), "");
         assert_eq!(trim_notes("a  \r\n\r\n\r\n\r\nb\u{7}\tc\r"), "a\n\nb\tc");
-        let long = "x".repeat(4000);
+        let long = "x".repeat(NOTES_MAX_CHARS * 2);
         let trimmed = trim_notes(&long);
         assert_eq!(trimmed.chars().count(), NOTES_MAX_CHARS);
         assert!(trimmed.ends_with("..."));
         // Multi-byte characters count once and are never split.
-        let wide = "\u{e01}".repeat(2000);
+        let wide = "\u{e01}".repeat(NOTES_MAX_CHARS + 500);
         let trimmed = trim_notes(&wide);
         assert_eq!(trimmed.chars().count(), NOTES_MAX_CHARS);
         let exact = "y".repeat(NOTES_MAX_CHARS);
