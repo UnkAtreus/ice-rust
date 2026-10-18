@@ -236,7 +236,19 @@ Apple items show; the overflow control has no settings.
   `AXIdentifier`).
 - **Capture indicator.** Capturing the menu bar for Menu Bar Layout made
   macOS show its "Audio and Video Controls" item (the screen capture
-  indicator) for a while.
+  indicator) for a while. It sits on the bar like any item, so Menu Bar
+  Layout shows it, and when it goes away during the read after a move,
+  the read logs "layout incomplete, kept as dropped".
+- **A full-screen Space adds a second menu bar window** (2026-10-18).
+  While a full-screen Space exists, MenuBarAgent has two windows on the
+  same display with the same slots. In the second, each of our items
+  reports the icon's identifier (`IceRust.ControlItem.Visible`) and
+  Apple's items report `_NS:` identifiers; MenuBarAgent lists the two in
+  either order. Reading both put every item in Menu Bar Layout twice,
+  made moves fail, and matched the icon to a divider, so coming back from
+  the full-screen Space showed "Command-drag the icon right of the
+  dividers" and kept every section shown. ice-rust now reads only the
+  window that has our hidden divider's identifier (`agent_bar::bar_slots`).
 - `MenuBarAgent`'s menu bar window (layer 24) is listed but not on screen;
   the Window Server "Menubar" window (layer 24, the one clicks land on) is.
 

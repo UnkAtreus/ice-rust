@@ -144,17 +144,23 @@ fn menu_bar_agent() -> Option<CFRetained<CFType>> {
     application(agent.iter().next()?.processIdentifier())
 }
 
-/// Every slot of every MenuBarAgent menu bar window, for `probe`. `None`
-/// without MenuBarAgent or Accessibility.
-pub fn agent_dump() -> Option<Vec<AgentSlot>> {
+/// The slots of each MenuBarAgent menu bar window, one list per window in
+/// MenuBarAgent's order. `None` without MenuBarAgent or Accessibility.
+pub fn agent_windows() -> Option<Vec<Vec<AgentSlot>>> {
     let app = menu_bar_agent()?;
     Some(
         children(&app)
             .iter()
             .filter(|window| string(window, "AXRole").as_deref() == Some("AXWindow"))
-            .flat_map(|window| window_slots(window))
+            .map(|window| window_slots(window))
             .collect(),
     )
+}
+
+/// Every slot of every MenuBarAgent menu bar window, for `probe`. `None`
+/// without MenuBarAgent or Accessibility.
+pub fn agent_dump() -> Option<Vec<AgentSlot>> {
+    agent_windows().map(|windows| windows.into_iter().flatten().collect())
 }
 
 /// The slots of one MenuBarAgent menu bar window.

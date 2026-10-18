@@ -231,6 +231,43 @@ fn same_frame(slot: &Rect, ours: Option<&Rect>) -> bool {
     })
 }
 
+/// The slots of the one MenuBarAgent menu bar window to read on `display`
+/// (CG space). `windows` holds each window's slots, in MenuBarAgent's
+/// order. While a full-screen Space exists, MenuBarAgent keeps a second
+/// window on the same display with the same slots, except that each of our
+/// items there reports the icon's identifier (macOS 27.0.1, 2026-10-18).
+/// Reading both put every item in the bars twice and matched the icon to a
+/// divider, so the order check saw the icon left of the dividers. The
+/// window to read is the one with our hidden divider's identifier; without
+/// one, the first window with slots on `display`.
+pub fn bar_slots(windows: &[Vec<AgentSlot>], own_pid: i32, display: &Rect) -> Vec<AgentSlot> {
+    let on_display = |slots: &Vec<AgentSlot>| -> Vec<AgentSlot> {
+        slots
+            .iter()
+            .filter(|s| {
+                (s.frame.y - display.y).abs() <= 1.0
+                    && s.frame.min_x() >= display.min_x() - 1.0
+                    && s.frame.max_x() <= display.max_x() + 1.0
+            })
+            .cloned()
+            .collect()
+    };
+    let mut candidates: Vec<Vec<AgentSlot>> = windows
+        .iter()
+        .map(on_display)
+        .filter(|slots| !slots.is_empty())
+        .collect();
+    let live = candidates.iter().position(|slots| {
+        slots
+            .iter()
+            .any(|s| s.pid == Some(own_pid) && s.identifier.as_deref() == Some(DIVIDER_AUTOSAVE))
+    });
+    match live {
+        Some(index) => candidates.swap_remove(index),
+        None => candidates.into_iter().next().unwrap_or_default(),
+    }
+}
+
 /// Splits MenuBarAgent's slots (one display) into the three sections by
 /// our dividers, found among the slots of `own_pid` by their accessibility
 /// identifier (the autosave name), else by their AppKit frames, which lag
@@ -819,5 +856,115 @@ mod tests {
             expanded_items(MenuBarState::HiddenShown),
             [ALWAYS_HIDDEN_AUTOSAVE, ALWAYS_HIDDEN_SPACER_AUTOSAVE]
         );
+    }
+
+    /// IceRust's process in the bars below.
+    const OWN: i32 = 4548;
+
+    fn main_display() -> Rect {
+        Rect::new(0.0, 0.0, 1616.0, 1010.0)
+    }
+
+    /// The live menu bar window in the VM with every section shown
+    /// (macOS 27.0.1, 2026-10-18).
+    fn live_window() -> Vec<AgentSlot> {
+        vec![
+            slot(1234.0, 16.0, OWN, "", Some(ALWAYS_HIDDEN_SPACER_AUTOSAVE)),
+            slot(1250.0, 33.0, OWN, "<<", Some(ALWAYS_HIDDEN_AUTOSAVE)),
+            slot(1283.0, 44.0, 671, "", None),
+            slot(1327.0, 31.0, 505, "Search", None),
+            slot(1358.0, 16.0, OWN, "", Some(SPACER_AUTOSAVE)),
+            slot(1374.0, 26.0, OWN, "<", Some(DIVIDER_AUTOSAVE)),
+            slot(1400.0, 34.0, OWN, "ice-rust", Some(ICON_AUTOSAVE)),
+            slot(1442.0, 26.0, 450, "Control Center", None),
+            slot(1484.0, 112.0, 450, "Clock", None),
+        ]
+    }
+
+    /// The second window MenuBarAgent keeps on the same display while a
+    /// full-screen Space exists: the same slots, but each of our items
+    /// reports the icon's identifier.
+    fn full_screen_copy() -> Vec<AgentSlot> {
+        live_window()
+            .into_iter()
+            .map(|mut s| {
+                if s.pid == Some(OWN) {
+                    s.name = Some("IceRust".to_string());
+                    s.identifier = Some(ICON_AUTOSAVE.to_string());
+                }
+                s
+            })
+            .collect()
+    }
+
+    fn live_ours() -> OurFrames {
+        OurFrames {
+            icon: Some(Rect::new(1400.0, 0.0, 34.0, 30.0)),
+            hidden: Some(Rect::new(1374.0, 0.0, 26.0, 30.0)),
+            spacer: Some(Rect::new(1358.0, 0.0, 16.0, 30.0)),
+            always_hidden: Some(Rect::new(1250.0, 0.0, 33.0, 30.0)),
+            always_spacer: Some(Rect::new(1234.0, 0.0, 16.0, 30.0)),
+        }
+    }
+
+    #[test]
+    fn bar_slots_leave_the_full_screen_copy_out() {
+        // MenuBarAgent lists the copy first while the full-screen Space is
+        // active and second otherwise; the live window wins either way.
+        for windows in [
+            vec![full_screen_copy(), live_window()],
+            vec![live_window(), full_screen_copy()],
+        ] {
+            let slots = bar_slots(&windows, OWN, &main_display());
+            assert_eq!(slots, live_window());
+            let layout = agent_layout(&slots, OWN, &live_ours()).unwrap();
+            let icon = layout.anchors.icon.and_then(|id| layout.frame(id)).unwrap();
+            assert_eq!(icon, Rect::new(1400.0, 0.0, 34.0, 30.0));
+            let hidden = layout.frame(layout.anchors.hidden_divider).unwrap();
+            let always = layout
+                .anchors
+                .always_hidden_divider
+                .and_then(|id| layout.frame(id));
+            let order = crate::geometry::control_order(&icon, &hidden, always.as_ref());
+            assert!(order.hidden_left_of_icon && order.always_hidden_left_of_icon);
+            // One tile per item: nothing from the copy.
+            assert_eq!(layout.frames.len(), live_window().len());
+        }
+    }
+
+    #[test]
+    fn bar_slots_without_our_identifiers_take_the_first_window() {
+        let plain = |window: Vec<AgentSlot>| -> Vec<AgentSlot> {
+            window
+                .into_iter()
+                .map(|mut s| {
+                    s.identifier = None;
+                    s
+                })
+                .collect()
+        };
+        let first = plain(live_window());
+        let mut second = plain(live_window());
+        second[2].name = Some("Other".to_string());
+        let windows = vec![first.clone(), second];
+        assert_eq!(bar_slots(&windows, OWN, &main_display()), first);
+    }
+
+    #[test]
+    fn bar_slots_keep_only_the_display() {
+        let other_display = live_window()
+            .into_iter()
+            .map(|mut s| {
+                s.frame.y = -1080.0;
+                s
+            })
+            .collect::<Vec<_>>();
+        let windows = vec![other_display, live_window()];
+        assert_eq!(bar_slots(&windows, OWN, &main_display()), live_window());
+        // A slot that runs past the display's right edge is not on it.
+        let mut spill = live_window();
+        spill.push(slot(1600.0, 40.0, 450, "Spill", None));
+        assert_eq!(bar_slots(&[spill], OWN, &main_display()), live_window());
+        assert!(bar_slots(&[], OWN, &main_display()).is_empty());
     }
 }

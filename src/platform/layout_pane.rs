@@ -40,7 +40,7 @@ use super::menu_bar_space;
 use super::timer;
 use super::ui::{Weight, font, rect, redraw_on_resize, srgb, tinted_symbol};
 use super::windows;
-use crate::agent_bar::{AgentLayout, AgentSlot, OurFrames, agent_layout};
+use crate::agent_bar::{AgentLayout, OurFrames, agent_layout, bar_slots};
 use crate::arrange::{Anchors, BarModel, bar_at, clamp_insertion, marker_x};
 use crate::bar_scroll::{
     StripLayout, autoscroll_offset, document_x, insertion_at, keep_right_distance, strip_layout,
@@ -313,16 +313,11 @@ pub fn load_snapshot(names: &ControlNames, frames: &ControlFrames) -> LayoutSnap
 /// The macOS 27 menu bar on `display` split into sections (v1.8), or why
 /// it cannot be.
 pub fn read_agent(ours: &OurFrames, display: &Rect) -> Result<AgentLayout, String> {
-    let slots: Vec<AgentSlot> = menu_bar_space::agent_dump()
-        .ok_or("Accessibility permission needed to read the menu bar")?
-        .into_iter()
-        .filter(|s| {
-            (s.frame.y - display.y).abs() <= 1.0
-                && s.frame.min_x() >= display.min_x() - 1.0
-                && s.frame.max_x() <= display.max_x() + 1.0
-        })
-        .collect();
-    agent_layout(&slots, std::process::id() as i32, ours)
+    let windows = menu_bar_space::agent_windows()
+        .ok_or("Accessibility permission needed to read the menu bar")?;
+    let own = std::process::id() as i32;
+    let slots = bar_slots(&windows, own, display);
+    agent_layout(&slots, own, ours)
         .ok_or_else(|| "The hidden divider is not in the menu bar".to_string())
 }
 
