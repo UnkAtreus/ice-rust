@@ -90,7 +90,7 @@ it (see [Differences from Ice](#differences-from-ice)).
   hides them when you switch apps. Installs that already stored auto-rehide
   settings keep Timed.
   Smart and Focused app were tried with synthetic clicks in a macOS 27
-  virtual machine, and Smart by hand on macOS 26.7.1.
+  virtual machine, and both by hand on macOS 26.7.1.
 - **Icon styles.** Choose the icon on the General page: the ice-rust logo
   (the default), Dot, Ellipsis, Ellipsis Circle, Chevron, Arrow, Eye, Door,
   Sunglasses, Snowflake, Grid, Star, or an image file of your own. Each built-in style
