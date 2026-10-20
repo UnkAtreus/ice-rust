@@ -73,9 +73,18 @@ impl Controller {
         }
     }
 
-    /// The display with our icon and its menu bar height.
+    /// The display with our icon and its menu bar height. MenuBarAgent's
+    /// slot for the icon decides first: it is where the items this page
+    /// reads are, and AppKit's frame can miss the display (issue #4).
     fn agent_display(&self) -> Option<(Rect, f64)> {
-        let place = self.menu_bar_place(&windows::list_on_screen(), None)?;
+        let on_screen = windows::list_on_screen();
+        let displays = windows::displays();
+        let place = self
+            .agent_icon()
+            .and_then(|icon| {
+                geometry::menu_bar_display(&on_screen, &displays, Some(&icon), None, None)
+            })
+            .or_else(|| self.menu_bar_place(&on_screen, None))?;
         Some((place.display.bounds, place.menu_bar_height))
     }
 

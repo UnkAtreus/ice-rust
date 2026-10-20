@@ -972,6 +972,13 @@ impl Controller {
             self.status.icon_frame().as_ref(),
             windows::primary_height(),
         )
+        .or_else(|| {
+            // macOS 27: MenuBarAgent's slot for the icon, when AppKit's
+            // frame puts it on no display (issue #4).
+            self.agent_menu_bar
+                .then(|| self.agent_icon_fallback(displays.len()))
+                .flatten()
+        })
     }
 
     /// The active menu bar display and our icon's x center. The pointer is

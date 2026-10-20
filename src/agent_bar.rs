@@ -257,15 +257,35 @@ pub fn bar_slots(windows: &[Vec<AgentSlot>], own_pid: i32, display: &Rect) -> Ve
         .map(on_display)
         .filter(|slots| !slots.is_empty())
         .collect();
-    let live = candidates.iter().position(|slots| {
-        slots
-            .iter()
-            .any(|s| s.pid == Some(own_pid) && s.identifier.as_deref() == Some(DIVIDER_AUTOSAVE))
-    });
+    let live = candidates
+        .iter()
+        .position(|slots| holds_our_divider(slots, own_pid));
     match live {
         Some(index) => candidates.swap_remove(index),
         None => candidates.into_iter().next().unwrap_or_default(),
     }
+}
+
+/// Whether `slots`, one MenuBarAgent window, are the live ones: there our
+/// hidden divider's slot carries its identifier (see `bar_slots`).
+fn holds_our_divider(slots: &[AgentSlot], own_pid: i32) -> bool {
+    slots
+        .iter()
+        .any(|s| s.pid == Some(own_pid) && s.identifier.as_deref() == Some(DIVIDER_AUTOSAVE))
+}
+
+/// Our icon's rectangle in CG space from MenuBarAgent: its slot in the live
+/// window (see `bar_slots`). On macOS 27 it stands in when AppKit's frame
+/// of the icon button puts the icon on no display; with an external display
+/// on macOS 27.2 the menu bar display was not found that way (issue #4).
+/// `None` without a live window or without our icon in it.
+pub fn agent_icon_rect(windows: &[Vec<AgentSlot>], own_pid: i32) -> Option<Rect> {
+    windows
+        .iter()
+        .find(|slots| holds_our_divider(slots, own_pid))?
+        .iter()
+        .find(|s| s.pid == Some(own_pid) && s.identifier.as_deref() == Some(ICON_AUTOSAVE))
+        .map(|s| s.frame)
 }
 
 /// Splits MenuBarAgent's slots (one display) into the three sections by
@@ -966,5 +986,49 @@ mod tests {
         spill.push(slot(1600.0, 40.0, 450, "Spill", None));
         assert_eq!(bar_slots(&[spill], OWN, &main_display()), live_window());
         assert!(bar_slots(&[], OWN, &main_display()).is_empty());
+    }
+
+    /// The live window and its copy shifted onto another display: the
+    /// external display (x 1512) shows our live items, the built-in one the
+    /// copy whose items all report the icon's identifier.
+    fn two_display_windows() -> Vec<Vec<AgentSlot>> {
+        let shift = |window: Vec<AgentSlot>, dx: f64| -> Vec<AgentSlot> {
+            window
+                .into_iter()
+                .map(|mut s| {
+                    s.frame.x += dx;
+                    s
+                })
+                .collect()
+        };
+        vec![
+            shift(full_screen_copy(), -1000.0),
+            shift(live_window(), 1512.0),
+        ]
+    }
+
+    #[test]
+    fn agent_icon_rect_comes_from_the_live_window() {
+        let rect = agent_icon_rect(&two_display_windows(), OWN).unwrap();
+        assert_eq!(rect, Rect::new(1400.0 + 1512.0, 0.0, 34.0, 30.0));
+        // The order MenuBarAgent lists the windows in does not matter.
+        let mut reversed = two_display_windows();
+        reversed.reverse();
+        assert_eq!(agent_icon_rect(&reversed, OWN), Some(rect));
+    }
+
+    #[test]
+    fn agent_icon_rect_needs_the_live_window_and_our_icon() {
+        // Only the copy: every item claims to be the icon, none is trusted.
+        assert_eq!(agent_icon_rect(&[full_screen_copy()], OWN), None);
+        // Another process's items.
+        assert_eq!(agent_icon_rect(&[live_window()], OWN + 1), None);
+        // The live window without our icon (folded away).
+        let without_icon: Vec<AgentSlot> = live_window()
+            .into_iter()
+            .filter(|s| s.identifier.as_deref() != Some(ICON_AUTOSAVE))
+            .collect();
+        assert_eq!(agent_icon_rect(&[without_icon], OWN), None);
+        assert_eq!(agent_icon_rect(&[], OWN), None);
     }
 }

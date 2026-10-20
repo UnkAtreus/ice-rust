@@ -41,6 +41,10 @@ const LAYOUT_SETTLE: Duration = Duration::from_millis(400);
 /// When to read again after a change: timers and `Instant` read different
 /// clocks, so a timer may fire a little early.
 const READ_AFTER: Duration = Duration::from_millis(500);
+/// How long a read of our icon's slot in MenuBarAgent stays good. The rehide
+/// tick and clicks ask for the icon; each fresh read walks MenuBarAgent's
+/// tree.
+const ICON_CACHE: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 pub(super) struct Agent {
@@ -60,6 +64,12 @@ pub(super) struct Agent {
     /// The last length change. AppKit reports the new width at once but
     /// the old position until MenuBarAgent has laid the items out again.
     changed: Cell<Option<Instant>>,
+    /// Our icon's slot in MenuBarAgent's live window and when it was read
+    /// (`agent_icon`).
+    icon: Cell<Option<(Instant, Option<Rect>)>>,
+    /// Whether "the icon is on no display" was logged since the icon was
+    /// last found.
+    icon_missing_logged: Cell<bool>,
 }
 
 /// Seconds since the first call, for the macOS 27 log lines, so a report
@@ -73,6 +83,36 @@ pub(super) fn stamp() -> String {
 }
 
 impl Controller {
+    /// Our icon's rectangle from MenuBarAgent's live window
+    /// (`agent_bar::agent_icon_rect`), read at most once per `ICON_CACHE`.
+    pub(super) fn agent_icon(&self) -> Option<Rect> {
+        if let Some((at, icon)) = self.agent.icon.get()
+            && at.elapsed() < ICON_CACHE
+        {
+            return icon;
+        }
+        let icon = menu_bar_space::agent_windows()
+            .and_then(|w| agent_bar::agent_icon_rect(&w, std::process::id() as i32));
+        self.agent.icon.set(Some((Instant::now(), icon)));
+        icon
+    }
+
+    /// `icon_rect` on macOS 27 when AppKit's frame puts the icon on no
+    /// display: MenuBarAgent's slot (`agent_icon`). While neither finds the
+    /// icon, logs that once with the AppKit frame, for reports (issue #4).
+    pub(super) fn agent_icon_fallback(&self, displays: usize) -> Option<Rect> {
+        let icon = self.agent_icon();
+        if icon.is_some() {
+            self.agent.icon_missing_logged.set(false);
+        } else if !self.agent.icon_missing_logged.replace(true) {
+            eprintln!(
+                "ice-rust: the icon is on no display: {displays} displays, AppKit frame {:?}",
+                self.status.icon_frame()
+            );
+        }
+        icon
+    }
+
     /// `set_menu_bar_state` on macOS 27: the lengths that hide or show
     /// `state`, or everything shown when our order would hide the icon.
     /// Returns the state applied.
