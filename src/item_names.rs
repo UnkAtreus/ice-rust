@@ -26,6 +26,8 @@ pub struct Owner {
     pub name: String,
     /// One of Apple's apps (see `shown_name`).
     pub apple: bool,
+    /// The app's process, for its icon in the search panel.
+    pub pid: i32,
 }
 
 /// Whether an app's item at `item` (Accessibility) fills the window at
@@ -130,6 +132,7 @@ mod tests {
         Owner {
             name: name.into(),
             apple: false,
+            pid: 2179,
         }
     }
 
@@ -137,6 +140,7 @@ mod tests {
         Owner {
             name: name.into(),
             apple: true,
+            pid: 646,
         }
     }
 

@@ -1,6 +1,6 @@
-//! Small AppKit building blocks for the Settings window: a flipped
-//! container view, closure-backed target and window delegate objects, a
-//! rounded box, and label and symbol helpers.
+//! Small AppKit building blocks for the Settings window and the panels: a
+//! flipped container view, closure-backed target and window delegate
+//! objects, a rounded box, rounded corners, and label and symbol helpers.
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
@@ -57,6 +57,21 @@ pub fn follow(view: &NSView, how: Follow) {
 pub fn add(parent: &NSView, view: &NSView, how: Follow) {
     follow(view, how);
     parent.addSubview(view);
+}
+
+/// Clips `view` and its subviews to a rounded rectangle.
+pub fn round_corners(view: &NSView, radius: f64) {
+    view.setWantsLayer(true);
+    // SAFETY: layer returns the view's CALayer, which exists once
+    // wantsLayer is set; setCornerRadius: takes a CGFloat and
+    // setMasksToBounds: a BOOL and both return void, as CALayer declares.
+    unsafe {
+        let layer: Option<Retained<AnyObject>> = msg_send![view, layer];
+        if let Some(layer) = layer {
+            let _: () = msg_send![&*layer, setCornerRadius: radius];
+            let _: () = msg_send![&*layer, setMasksToBounds: true];
+        }
+    }
 }
 
 /// Redraws a custom-drawn view while its size changes, not only at the

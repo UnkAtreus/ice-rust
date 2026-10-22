@@ -16,6 +16,7 @@ pub mod menu_icon;
 pub mod mover;
 pub mod permissions;
 pub mod render;
+pub mod search_panel;
 pub mod settings_window;
 pub mod status;
 pub mod timer;

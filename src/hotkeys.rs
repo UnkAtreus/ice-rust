@@ -16,14 +16,18 @@ use crate::triggers::Modifiers;
 pub enum HotkeyAction {
     ToggleHiddenSection,
     ToggleAlwaysHiddenSection,
+    /// Opens or closes the search panel (v1.11).
+    SearchMenuBarItems,
     /// Turns Use Ice Bar on or off.
     EnableIceBar,
 }
 
 impl HotkeyAction {
-    pub const ALL: [HotkeyAction; 3] = [
+    /// In Ice's order.
+    pub const ALL: [HotkeyAction; 4] = [
         HotkeyAction::ToggleHiddenSection,
         HotkeyAction::ToggleAlwaysHiddenSection,
+        HotkeyAction::SearchMenuBarItems,
         HotkeyAction::EnableIceBar,
     ];
 
@@ -31,6 +35,7 @@ impl HotkeyAction {
         match self {
             HotkeyAction::ToggleHiddenSection => "ToggleHiddenSection",
             HotkeyAction::ToggleAlwaysHiddenSection => "ToggleAlwaysHiddenSection",
+            HotkeyAction::SearchMenuBarItems => "SearchMenuBarItems",
             HotkeyAction::EnableIceBar => "EnableIceBar",
         }
     }
@@ -43,6 +48,7 @@ impl HotkeyAction {
         match self {
             HotkeyAction::ToggleHiddenSection => "Toggle the hidden section",
             HotkeyAction::ToggleAlwaysHiddenSection => "Toggle the always-hidden section",
+            HotkeyAction::SearchMenuBarItems => "Search menu bar items",
             HotkeyAction::EnableIceBar => "Turn the Ice Bar on or off",
         }
     }
@@ -51,6 +57,7 @@ impl HotkeyAction {
         match self {
             HotkeyAction::ToggleHiddenSection => "Like a click on the icon",
             HotkeyAction::ToggleAlwaysHiddenSection => "Like an Option-click on the icon",
+            HotkeyAction::SearchMenuBarItems => "Opens or closes the search panel",
             HotkeyAction::EnableIceBar => "Switches Use Ice Bar",
         }
     }
@@ -59,7 +66,8 @@ impl HotkeyAction {
         match self {
             HotkeyAction::ToggleHiddenSection => 0,
             HotkeyAction::ToggleAlwaysHiddenSection => 1,
-            HotkeyAction::EnableIceBar => 2,
+            HotkeyAction::SearchMenuBarItems => 2,
+            HotkeyAction::EnableIceBar => 3,
         }
     }
 
@@ -165,7 +173,7 @@ impl KeyCombo {
 
 /// The assigned hotkeys, one per action at most.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Hotkeys([Option<KeyCombo>; 3]);
+pub struct Hotkeys([Option<KeyCombo>; HotkeyAction::ALL.len()]);
 
 impl Hotkeys {
     pub fn get(&self, action: HotkeyAction) -> Option<KeyCombo> {
@@ -251,6 +259,7 @@ fn action_phrase(action: HotkeyAction) -> &'static str {
     match action {
         HotkeyAction::ToggleHiddenSection => "toggle the hidden section",
         HotkeyAction::ToggleAlwaysHiddenSection => "toggle the always-hidden section",
+        HotkeyAction::SearchMenuBarItems => "search menu bar items",
         HotkeyAction::EnableIceBar => "turn the Ice Bar on or off",
     }
 }
@@ -363,7 +372,12 @@ mod tests {
             assert_eq!(HotkeyAction::from_id(action.id()), Some(action));
         }
         assert_eq!(HotkeyAction::from_id(0), None);
-        assert_eq!(HotkeyAction::from_key("SearchMenuBarItems"), None);
+        assert_eq!(HotkeyAction::from_id(5), None);
+        assert_eq!(
+            HotkeyAction::from_key("SearchMenuBarItems"),
+            Some(HotkeyAction::SearchMenuBarItems)
+        );
+        assert_eq!(HotkeyAction::from_key("ToggleApplicationMenus"), None);
     }
 
     #[test]

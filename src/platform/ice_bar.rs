@@ -21,7 +21,7 @@ use objc2_foundation::{NSDictionary, NSObject, NSPoint, NSRect, NSString};
 
 use super::item_names;
 use super::layout_pane::{BarScrollView, knob_style};
-use super::ui::srgb;
+use super::ui::{round_corners, srgb};
 use crate::bar_layout::is_click;
 use crate::bar_scroll::{StripLayout, wheel_offset};
 use crate::image_check::prefers_dark_text;
@@ -47,22 +47,6 @@ fn ns_rect(r: &Rect) -> NSRect {
 /// Corner radius of a bar `height` tall.
 fn bar_radius(height: f64) -> f64 {
     height / 4.0
-}
-
-/// Clips `view` and its subviews to a rounded rectangle, so tiles that
-/// scroll past a bar's end stay inside its rounded corners.
-fn round_corners(view: &NSView, radius: f64) {
-    view.setWantsLayer(true);
-    // SAFETY: layer returns the view's CALayer, which exists once
-    // wantsLayer is set; setCornerRadius: takes a CGFloat and
-    // setMasksToBounds: a BOOL and both return void, as CALayer declares.
-    unsafe {
-        let layer: Option<Retained<AnyObject>> = msg_send![view, layer];
-        if let Some(layer) = layer {
-            let _: () = msg_send![&*layer, setCornerRadius: radius];
-            let _: () = msg_send![&*layer, setMasksToBounds: true];
-        }
-    }
 }
 
 /// Scrolls `scroll` so `offset` is at its visible left edge.
@@ -397,6 +381,7 @@ impl IceBar {
     ) {
         let bounds = ns_rect(&Rect::new(0.0, 0.0, frame.width, frame.height));
         let content = BarView::new(self.mtm, bounds, bar_color);
+        // Tiles that scroll past an end stay inside the rounded corners.
         round_corners(&content, bar_radius(frame.height));
         let tiles = ItemStrip::new(
             self.mtm,

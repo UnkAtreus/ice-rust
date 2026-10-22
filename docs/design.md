@@ -1290,3 +1290,49 @@ inside the rounded corner. Five tiles gave a 154 pt panel that did not
 scroll or bounce. The panel allowed tooltips while inactive. Real items
 wider than a display were not available on the host (P14), and trackpad
 scrolling and tooltips in the open bar need a hand test.
+
+## v1.11: search menu bar items (roadmap, 2026-10-23)
+
+The last item of the ice-rust roadmap. Ice's search panel
+(`Ice/MenuBar/Search/MenuBarSearchPanel.swift`, `Ice/UI/Views/SectionedList.swift`):
+a 600 by 400 pt non-activating floating panel that can become key, placed
+on the screen with the mouse with its top at the middle plus half its
+height plus an eighth of the screen; a search field, a list of the managed
+items under section headers (each section's items reversed, so right to
+left), a bottom bar with a Settings button and "Click item" or "Show item"
+with a Return glyph; Fuse fuzzy matching with threshold 0.5 over display
+names, the first result selected, headers dropped while searching; Up and
+Down skip headers, Return or a double click acts, a single click selects;
+the action closes the panel, waits 25 ms and shows the item temporarily
+and clicks it; Escape (a key-down monitor), a click outside, a Space
+change and a screen change close it; the SearchMenuBarItems hotkey
+toggles it. Ice leaves out the items it cannot hide: AudioVideoModule,
+FaceTime and MusicRecognition.
+
+| Decision | Why |
+|---|---|
+| The list comes from `layout_pane::load_snapshot` | The same reading of the menu bar as Menu Bar Layout: sections, images, bar fill and the item name lookup, with its bounded captures. |
+| Names from `item_names`, icons from the owner's `NSRunningApplication` | The tooltips' names are the ones worth searching ("Item-0" is not); the owner now keeps its pid for the icon. |
+| Our own matching instead of Fuse: start, word start, inside, letters in order, every query word | No fuzzy-search dependency, and the ranking is unit tested. Typos are not forgiven; recorded under Limitations. |
+| A borderless `NSPanel` subclass that can become key, over a rounded `NSVisualEffectView` | Takes the keyboard without activating ice-rust, like Ice's panel, without a title bar over the search field. |
+| Keys through the field's delegate (`control:textView:doCommandBySelector:`) | Up, Down, Return and Escape need no key monitor while the field has the keyboard. |
+| Command-X, C, V and A sent to the first responder by the panel | ice-rust's main menu has no Edit menu, so the field would not get them. |
+| Click through `click_through(id, section)`, revealing only hidden sections | The Ice Bar's path, which now takes the section instead of reading the bar's; a visible item needs no reveal. |
+| A 0.5 s timer re-reads names and icons while the panel is open | The first item name lookup after launch takes about 1.2 s. |
+| Off on macOS 27 | Clicking an item needs its window, which the macOS 27 menu bar does not have; the same reason the Ice Bar is off. |
+
+Harness check (macOS 26.7.1, 2026-10-23, the screen locked): a scratch
+program loaded the live menu bar with `load_snapshot` (1.1 s, read only),
+opened the panel in its own process and drove it through its methods; the
+choose handler only recorded the item, so nothing was clicked. The list had
+30 rows: three headers and 27 items, AudioVideoModule left out; after
+1.5 s "Item-0" read TextInputMenuAgent. "dis" listed DisplayLink Manager
+alone; "c" listed Clock, Control Center, CodexBar, Cellio (twice) and
+Cloudflare WARP first, then names with a "c" inside; Down twice selected
+CodexBar; "zzzz" showed "No items match"; on the blank list Down four
+times and Return closed the panel and handed over RunCat Neo (window 165,
+visible section). Window captures were blank while the screen was locked,
+so the content view was drawn offscreen instead: icons, names, the
+selection and the hidden items' images on the bar fill drew as designed.
+The Hotkeys page, rendered with `render-settings`, shows the new row.
+

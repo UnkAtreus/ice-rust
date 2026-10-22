@@ -93,7 +93,12 @@ impl HotkeysPane {
                 if i > 0 {
                     separator(mtm, &group, y, width);
                 }
-                let unavailable = agent && action == HotkeyAction::EnableIceBar;
+                // Both click items through their windows (v1.8).
+                let unavailable = agent
+                    && matches!(
+                        action,
+                        HotkeyAction::EnableIceBar | HotkeyAction::SearchMenuBarItems
+                    );
                 let detail = if unavailable {
                     NOT_ON_MACOS_27
                 } else {

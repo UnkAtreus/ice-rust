@@ -51,7 +51,10 @@ on: macOS 26.3 on Apple Silicon, with four displays.
   always-hidden section; showing it shows everything, and hiding it again
   re-expands only its own divider. Right click (or Control-click) opens a
   menu: Show/Hide Hidden Items, Show/Hide Always-Hidden Items, Use Ice Bar,
-  Settings..., Arrange Menu Bar Items..., and Quit ice-rust.
+  Search Menu Bar Items..., Settings..., Arrange Menu Bar Items..., Check
+  for Updates..., and Quit ice-rust.
+- Search Menu Bar Items... or its hotkey opens the search panel (v1.11,
+  see [Search](#search-v111)).
 - Ice Bar mode (on by default): the dividers stay expanded and a click on the
   icon opens a panel under the menu bar with an image of each hidden item;
   Option-click opens it with the always-hidden items. Items wider than the
@@ -98,8 +101,8 @@ The logic lives in pure modules with unit tests and no macOS dependencies:
 API in `docs/clean-room/smart-rehide/API.md`), `input_tag`, `worker`, `image_check`, `brand` (the
 embedded artwork), `menu_icon` (the icon styles), `triggers` (show on
 click, hover and scroll), `app_menus` (hide application menus),
-`item_names` (app names for the item tooltips), and the defaults half of
-`settings`. The macOS glue is under `src/platform/` and
+`item_names` (app names for the item tooltips), `search` (the search
+panel's matching and rows), and the defaults half of `settings`. The macOS glue is under `src/platform/` and
 compiles only on macOS. The binary (`src/main.rs`) parses the command line
 and dispatches to the menu bar app, `probe` or `render-settings`.
 
@@ -286,7 +289,8 @@ bars stretch.
   is visible and idle, skipping one refresh after a capture timed out; an
   image that timed out keeps the one from the previous refresh.
 - Hotkeys (v1.9): one row per action (toggle the hidden section, the
-  always-hidden section, Use Ice Bar) with a field that records a shortcut
+  always-hidden section, search menu bar items, Use Ice Bar) with a field
+  that records a shortcut
   and a button that clears it. See [Hotkeys](#hotkeys-v19).
 - Permissions: the state of Screen Recording and Accessibility, refreshed
   every second. Accessibility changes show within a second; a Screen
@@ -304,7 +308,8 @@ id, and one `InstallEventHandler` for hotkey presses, installed with the
 first hotkey (`platform::hotkeys`). Carbon hotkeys need no permission. The
 handler runs the action on the next pass of the run loop: the hidden
 section toggles like a click on the icon, the always-hidden section like an
-Option-click, and Use Ice Bar flips like its switch (ignored on macOS 27,
+Option-click, search opens or closes the search panel, and Use Ice Bar
+flips like its switch (search and Use Ice Bar are ignored on macOS 27,
 with a log line). None is assigned by default.
 
 The hotkeys are stored under the defaults key `Hotkeys` as a JSON string,
@@ -327,6 +332,41 @@ reported under the rows. Changing pages, closing the window or the window
 losing key status ends a recording. Fields show the modifier symbols and
 the key's name in the current keyboard layout (`UCKeyTranslate`), or a
 fixed name for keys that type no character.
+
+## Search (v1.11)
+
+Like Ice's search panel: a 600 by 400 pt floating panel, centered on the
+display with the pointer with its top an eighth of the display's height
+above the middle, that takes the keyboard without activating ice-rust
+(a borderless non-activating panel that can become key). Opening it
+closes the Ice Bar and reads the menu bar as Menu Bar Layout does
+(`layout_pane::load_snapshot`: the three sections, their images and the
+bar fill), and the Ice Bar closes it.
+
+- The list shows every item except ice-rust's icon and Control Center's
+  camera, microphone and screen indicators, FaceTime and music recognition
+  (which Ice leaves out too): under a header per section, right to left
+  within each section, as Ice lists them. A row has the owning app's icon
+  and name ([Item names](#item-names)) and the item's image on the bar
+  fill. Names and icons that arrive after the panel opened appear within
+  0.5 s.
+- Typing filters (`search::rows`): each word of the query must match a
+  name, ignoring case, at its start, at the start of a word in it
+  (separators and camel case count), anywhere in it, or as letters in
+  order, in that order of rank, with more for letters that start words.
+  Matches drop the headers and keep list order among equals. The first
+  match is selected.
+- Up and Down move the selection past headers and stop at the ends.
+  Return, a double click or the Click Item button closes the panel and,
+  25 ms later, clicks the item as a click in the Ice Bar does: the item's
+  section is revealed first unless it is the visible section, then the
+  click waits up to 1 s for the item to reach the screen. A single click
+  selects. The gear button opens Settings.
+- Escape, a click in another app or in another ice-rust window, a Space
+  change and a display change close the panel. Command-X, C, V and A edit
+  the field (the app has no Edit menu).
+- Not on macOS 27 yet: clicking needs item windows (the menu item is
+  hidden and the hotkey logs a line).
 
 ## Moving items
 
@@ -828,15 +868,20 @@ window per display (`crate::agent_bar`, `platform/app/agent.rs`, research in
   `arrange::drop_point` next to the target (the hidden section's end is
   left of the spacer), read back after 500 ms with `model_matches`, up to
   `MOVE_RETRIES` drops; moves queue one at a time.
-- **Off:** the Ice Bar (sections show in the menu bar) and Hide app menus;
-  their Settings controls say "Not available on macOS 27 yet".
+- **Off:** the Ice Bar (sections show in the menu bar), search and Hide
+  app menus; their Settings controls say "Not available on macOS 27 yet",
+  and the menu hides Use Ice Bar and Search Menu Bar Items....
 - **Probe.** `agent_slots` in the JSON (x, y, width, height, pid, name,
   overflow_control, folded) and a slot table in the text report.
 
 ## Limitations and differences from Ice
 
-- Out of scope: global hotkeys, menu bar appearance and search. The
-  Settings window has no Hotkeys, Appearance or Updates pages.
+- Out of scope: menu bar appearance. The Settings window has no
+  Appearance or Updates pages.
+- Search matches names by their start, a word in them, a part of them or
+  their letters in order; Ice's fuzzy search also forgives typos. The
+  search panel's images are captured when it opens and not refreshed while
+  it is open (Ice refreshes them every 3 s).
 - Smart and focused-app rehide follow Ice with the changes in the spec's
   Part B: Smart finds the clicked app with an Accessibility hit test and
   falls back to the window list, never reading window titles, so Screen

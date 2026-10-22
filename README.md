@@ -74,9 +74,14 @@ it (see [Differences from Ice](#differences-from-ice)).
   or scroll down over it, to show the hidden items; scroll up to hide them.
   Show on hover (off by default) shows them while the pointer rests on an
   empty part of the menu bar and hides them again when it leaves.
+- **Search menu bar items.** Search Menu Bar Items... in the menu, or a
+  hotkey, opens a panel that lists every item by section with its app's
+  icon and name. Type to filter, then press Return or double-click to click
+  the item; a hidden item is shown first.
 - **Global hotkeys.** Set shortcuts on the Hotkeys page to toggle the
-  hidden section, the always-hidden section or the Ice Bar from any app.
-  None is set by default, and they need no permission.
+  hidden section, the always-hidden section or the Ice Bar, or to open the
+  search panel, from any app. None is set by default, and they need no
+  permission.
 - **Settings window.** A General page (icon, launch at login, updates), a
   Hidden Items page (Ice Bar, show on click, hover and scroll, rehide), a
   Menu Bar Layout page where you drag items between the Visible, Hidden and
@@ -125,7 +130,7 @@ of this repository.
 | Hide application menus when they overlap with shown items | Yes | Yes | "Hide app menus" on the Hidden Items page, on by default, for Use Ice Bar off. Needs Accessibility. |
 | Drag and drop interface to arrange individual items | Yes | Yes | Moves on-screen items only: the sections involved are revealed first. |
 | Display hidden items in a separate bar (Ice Bar) | Yes | Yes | Clicking an image reveals the whole section, then clicks the real item. Scrolls sideways when wider than the display. |
-| Search menu bar items | Yes | No | |
+| Search menu bar items | Yes | Yes | Matches the start of a name, a word in it, a part of it or its letters in order; Ice also forgives typos. Not on macOS 27 yet. |
 | Menu bar item spacing | Yes (beta) | No | |
 | Profiles for menu bar layout | Roadmap | No | |
 | Individual spacer items | Roadmap | No | |
@@ -152,7 +157,7 @@ need no permission.
 | Feature | Ice | ice-rust | Notes |
 |---|---|---|---|
 | Toggle individual menu bar sections | Yes | Yes | The hidden and the always-hidden section. |
-| Show the search panel | Yes | No | No search panel. |
+| Show the search panel | Yes | Yes | Opens or closes it; not on macOS 27 yet. |
 | Enable/disable the Ice Bar | Yes | Yes | Switches "Use Ice Bar"; not on macOS 27, which has no Ice Bar yet. |
 | Show/hide section divider icons | Yes | No | |
 | Toggle application menus | Yes | No | |
@@ -183,9 +188,7 @@ need no permission.
 
 ### Roadmap for ice-rust
 
-Planned, in rough priority order. Nothing here is implemented yet.
-
-- [ ] Search menu bar items
+Everything planned so far is in. Suggestions are welcome as GitHub issues.
 
 ## Screenshots
 
@@ -212,8 +215,8 @@ at the left end.
 - macOS 14 or later (the app bundle's minimum). ice-rust has been tested
   on macOS 26.3 on Apple Silicon, and on macOS 27.0.1 in a virtual machine.
   Intel Macs and macOS 14 and 15 are untested.
-- On macOS 27, hiding, showing and Menu Bar Layout work; the Ice Bar and
-  Hide app menus are not available yet (see
+- On macOS 27, hiding, showing and Menu Bar Layout work; the Ice Bar,
+  search and Hide app menus are not available yet (see
   [Known limitations](#known-limitations-and-open-issues)).
 - Rust 1.88 or later. The crate uses edition 2024 and let chains, which
   stabilized in 1.88, and declares `rust-version = "1.88"`; clippy's
@@ -285,13 +288,14 @@ return.
 |---|---|
 | Click the icon | Shows or hides the hidden section. With Use Ice Bar on, opens or closes the Ice Bar with the hidden items. |
 | Option-click the icon | Shows or hides the always-hidden section; showing it shows everything. With Use Ice Bar on, opens the Ice Bar with the always-hidden items. |
-| Right-click or Control-click the icon | Opens the menu: Show/Hide Hidden Items, Show/Hide Always-Hidden Items, Use Ice Bar, Settings..., Arrange Menu Bar Items..., Check for Updates..., Quit ice-rust. |
+| Right-click or Control-click the icon | Opens the menu: Show/Hide Hidden Items, Show/Hide Always-Hidden Items, Use Ice Bar, Search Menu Bar Items..., Settings..., Arrange Menu Bar Items..., Check for Updates..., Quit ice-rust. |
 | Click an empty part of the menu bar | Same as clicking the icon (Show on click, on by default); Option-click for the always-hidden section. Needs Accessibility to tell empty space from the app's menus. |
 | Swipe or scroll over the menu bar | Down or right shows the hidden items, up or left hides them, once per gesture (Show on scroll, on by default). |
 | Rest the pointer on an empty part of the menu bar | Shows the hidden items after the hover delay (Show on hover, off by default); they hide again once the pointer leaves the menu bar and the Ice Bar, unless you clicked in the menu bar meanwhile. |
 | Click an image in the Ice Bar | Closes the bar, reveals the item's section, waits up to 1 s for the item to reach the screen, and clicks it. |
+| Search Menu Bar Items... | Opens the search panel in the middle of the display with the pointer. Type to filter; the arrow keys move the selection; Return, a double click or Click Item clicks the item (a hidden item's section is shown first, as from the Ice Bar); Escape or a click elsewhere closes it. |
 | Settings... (Command-comma while the menu is open) | Opens the Settings window: General, Hidden Items, Menu Bar Layout, Hotkeys, Permissions, About. |
-| A hotkey you set on the Hotkeys page | Works in any app: toggles the hidden section (like a click on the icon), the always-hidden section (like an Option-click), or Use Ice Bar. None is set by default. A shortcut needs Command or Control; macOS 15 and later do not pass on shortcuts with only Option or Option-Shift. |
+| A hotkey you set on the Hotkeys page | Works in any app: toggles the hidden section (like a click on the icon), the always-hidden section (like an Option-click), the search panel, or Use Ice Bar. None is set by default. A shortcut needs Command or Control; macOS 15 and later do not pass on shortcuts with only Option or Option-Shift. |
 | Check for Updates... | Checks GitHub now, even with automatic checks off, and offers a newer version or says ice-rust is up to date. Also on the About page. |
 | Arrange Menu Bar Items... | Opens Settings on the Menu Bar Layout page. Drag a tile to a new place in any bar; ice-rust moves the real item and rebuilds the bars from the menu bar. |
 | Command-drag in the menu bar | Rearranges items with macOS's own drag. Keep the ice-rust icon right of both dividers; ice-rust refuses to hide while a divider sits right of the icon. |
@@ -373,7 +377,7 @@ and runtime observations.
 
 ## Differences from Ice
 
-- ice-rust has no search or menu bar appearance settings. Its Settings
+- ice-rust has no menu bar appearance settings. Its Settings
   window has no Appearance or Updates page; the update settings are on the
   General page.
 - Smart rehide asks Accessibility which app took the click instead of
@@ -476,8 +480,8 @@ What these numbers do not cover:
   that limit, so macOS folds the hidden items into its own overflow control
   ([docs/macos27.md](docs/macos27.md), issue #2). Each divider has a
   spacer next to it (a 16 pt gap while shown), and ice-rust drags a spacer
-  back next to its divider if macOS moves it. The Ice Bar and Hide app
-  menus are not available on macOS 27 yet. Menu Bar Layout shows every
+  back next to its divider if macOS moves it. The Ice Bar, search and Hide
+  app menus are not available on macOS 27 yet. Menu Bar Layout shows every
   section in the menu bar while it is open, until Settings closes, because
   macOS 27 gives folded items no position to read or drag; items that
   still do not fit are left out of the page. With displays of different

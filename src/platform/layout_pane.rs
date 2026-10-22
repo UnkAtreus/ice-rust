@@ -787,7 +787,7 @@ fn text_attributes(
 
 /// Draws one line of text in `frame`, cut off with an ellipsis when it
 /// does not fit.
-fn draw_text(text: &str, frame: &Rect, font: &NSFont, color: &NSColor) {
+pub(super) fn draw_text(text: &str, frame: &Rect, font: &NSFont, color: &NSColor) {
     let attributes = text_attributes(font, color, NSLineBreakMode::ByTruncatingTail);
     // SAFETY: the attributes map NSAttributedStringKey values to an NSFont,
     // an NSColor and an NSParagraphStyle, the types AppKit expects.

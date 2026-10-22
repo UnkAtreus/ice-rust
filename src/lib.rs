@@ -19,6 +19,7 @@ pub mod menu_icon;
 pub mod model;
 pub mod rehide;
 pub mod rehide_policy;
+pub mod search;
 pub mod sections;
 pub mod settings;
 pub mod triggers;

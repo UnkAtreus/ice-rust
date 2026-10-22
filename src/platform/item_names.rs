@@ -7,7 +7,8 @@ use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Instant;
 
-use objc2_app_kit::{NSApplicationActivationPolicy, NSRunningApplication, NSWorkspace};
+use objc2::rc::Retained;
+use objc2_app_kit::{NSApplicationActivationPolicy, NSImage, NSRunningApplication, NSWorkspace};
 
 use super::menu_bar_space;
 use crate::item_names::{NameBook, Owner, is_apple, same_item, shown_name};
@@ -37,9 +38,17 @@ pub fn name(id: WindowId, own: &str) -> String {
     shown_name(own, book().owner(id))
 }
 
+/// The icon of the app that owns item `id`, once found (`look_up`,
+/// `note_owners`), while it runs. Main thread only.
+pub fn icon(id: WindowId) -> Option<Retained<NSImage>> {
+    let pid = book().owner(id)?.pid;
+    NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?.icon()
+}
+
 /// `app` as an item owner; `None` for ours, whose items have names.
 fn owner(app: &NSRunningApplication) -> Option<Owner> {
-    if app.processIdentifier() == std::process::id() as i32 {
+    let pid = app.processIdentifier();
+    if pid == std::process::id() as i32 {
         return None;
     }
     let bundle = app.bundleIdentifier().map(|id| id.to_string());
@@ -49,6 +58,7 @@ fn owner(app: &NSRunningApplication) -> Option<Owner> {
             .localizedName()
             .map(|name| name.to_string())
             .or(bundle)?,
+        pid,
     })
 }
 

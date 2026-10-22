@@ -36,6 +36,7 @@ use super::menu_bar_space;
 use super::menu_icon::{self, CustomIcon};
 use super::mover::{MenuBarRoom, MoveCallback, MoveRequest, Mover, MoverHost};
 use super::permissions;
+use super::search_panel::SearchPanel;
 use super::settings_window::{Page, SettingsHost, SettingsWindow};
 use super::status::{self, StatusItems};
 use super::timer;
@@ -131,6 +132,13 @@ define_class!(
         fn toggle_ice_bar(&self, _sender: Option<&AnyObject>) {
             if let Some(c) = self.controller() {
                 c.toggle_ice_bar_mode();
+            }
+        }
+
+        #[unsafe(method(searchItems:))]
+        fn search_items(&self, _sender: Option<&AnyObject>) {
+            if let Some(c) = self.controller() {
+                c.toggle_search();
             }
         }
 
@@ -285,6 +293,8 @@ struct Controller {
     status: StatusItems,
     bar: IceBar,
     bar_section: Cell<Section>,
+    /// Search menu bar items (v1.11).
+    search: Rc<SearchPanel>,
     rehide: RefCell<Rehide>,
     mover: Rc<Mover>,
     updater: Rc<Updater>,
@@ -415,10 +425,20 @@ impl Controller {
         let agent_menu_bar = agent_bar::uses_agent_menu_bar(status::os_major());
         // The Ice Bar needs item windows to capture (v1.8).
         use_bar_item.setHidden(agent_menu_bar);
+        let search_item = menu_item(
+            mtm,
+            "Search Menu Bar Items...",
+            sel!(searchItems:),
+            "",
+            Some(target),
+        );
+        // Search clicks items through their windows, like the Ice Bar.
+        search_item.setHidden(agent_menu_bar);
         menu.addItem(&toggle_item);
         menu.addItem(&always_item);
         menu.addItem(&use_bar_item);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
+        menu.addItem(&search_item);
         menu.addItem(&menu_item(
             mtm,
             "Settings...",
@@ -458,6 +478,20 @@ impl Controller {
                     .upgrade()
                     .is_some_and(|c| c.settings.borrow().auto_check_updates)
             });
+            let (chooser, opener) = (me.clone(), me.clone());
+            let search = SearchPanel::new(
+                mtm,
+                Rc::new(move |id, section| {
+                    if let Some(c) = chooser.upgrade() {
+                        c.defer_click_through(id, section);
+                    }
+                }),
+                Rc::new(move || {
+                    if let Some(c) = opener.upgrade() {
+                        c.open_settings(None);
+                    }
+                }),
+            );
             Self {
                 mtm,
                 me: me.clone(),
@@ -467,6 +501,7 @@ impl Controller {
                 status,
                 bar: IceBar::new(mtm),
                 bar_section: Cell::new(Section::Hidden),
+                search,
                 rehide: RefCell::new(rehide),
                 mover,
                 updater,
@@ -581,12 +616,14 @@ impl Controller {
         events::cancel_active();
     }
 
-    /// Closes the Ice Bar whenever `name` is posted on `center`.
+    /// Closes the Ice Bar and the search panel whenever `name` is posted
+    /// on `center`.
     fn observe(&self, center: &NSNotificationCenter, name: &NSNotificationName) {
         let me = self.me.clone();
         let block = RcBlock::new(move |_note: NonNull<NSNotification>| {
             if let Some(c) = me.upgrade() {
                 c.close_bar();
+                c.search.close();
                 // The longest divider follows the narrowest display (v1.8).
                 if c.agent_menu_bar && !c.mover.is_busy() {
                     c.set_menu_bar_state(c.status.state());
@@ -695,6 +732,23 @@ impl Controller {
         } else {
             self.open_bar(section);
         }
+    }
+
+    /// Opens the search panel (v1.11), or closes it when it is open. It
+    /// lists what Menu Bar Layout shows and clicks items like the Ice Bar,
+    /// through their windows, which the macOS 27 menu bar does not have.
+    fn toggle_search(&self) {
+        if self.agent_menu_bar {
+            eprintln!("ice-rust: search is not available on macOS 27 yet");
+            return;
+        }
+        if self.search.is_visible() {
+            self.search.close();
+            return;
+        }
+        self.close_bar();
+        let snapshot = self.load_layout();
+        self.search.show(&snapshot);
     }
 
     fn toggle_ice_bar_mode(&self) {
@@ -1033,6 +1087,7 @@ impl Controller {
     }
 
     fn open_bar(&self, section: Section) {
+        self.search.close();
         let all = windows::list_windows();
         let (divider, items) = self.section_items(&all, section);
         let Some((place, anchor)) = self.bar_place(&all, divider.as_ref().map(|d| &d.bounds))
@@ -1120,7 +1175,7 @@ impl Controller {
         let me = self.me.clone();
         let on_click: ClickHandler = Rc::new(move |id| {
             if let Some(c) = me.upgrade() {
-                c.defer_click_through(id);
+                c.defer_click_through(id, c.bar_section.get());
             }
         });
         self.bar.show(&frame, &strip, items, &on_click, bar_color);
@@ -1161,25 +1216,27 @@ impl Controller {
         *self.outside_monitor.borrow_mut() = monitor;
     }
 
-    fn defer_click_through(&self, id: WindowId) {
+    fn defer_click_through(&self, id: WindowId, section: Section) {
         let me = self.me.clone();
         timer::after(self.mtm, CLICK_DEFER, move || {
             if let Some(c) = me.upgrade() {
-                c.click_through(id);
+                c.click_through(id, section);
             }
         });
     }
 
-    /// Reveals the bar's section, waits for the item to land on screen,
+    /// Reveals the item's section, waits for the item to land on screen,
     /// then clicks it. Nothing here blocks: the wait is a timer and the
     /// click restores the cursor per G4. A move in progress owns the mouse,
     /// so the click waits for it to end, and the wait starts over then.
-    fn click_through(&self, id: WindowId) {
-        let section = self.bar_section.get();
+    fn click_through(&self, id: WindowId, section: Section) {
         // close_bar releases hover: the revealed section stays when the
         // pointer leaves the menu bar.
         self.close_bar();
-        self.reveal(section);
+        // A visible item is on screen already (search).
+        if section != Section::Visible {
+            self.reveal(section);
+        }
         if !permissions::check().can_post_events() {
             // CGEventPost would drop the click silently. The section stays
             // shown so the item can be clicked by hand.

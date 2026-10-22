@@ -81,6 +81,7 @@ impl Controller {
         match action {
             HotkeyAction::ToggleHiddenSection => self.toggle(Section::Hidden),
             HotkeyAction::ToggleAlwaysHiddenSection => self.toggle(Section::AlwaysHidden),
+            HotkeyAction::SearchMenuBarItems => self.toggle_search(),
             HotkeyAction::EnableIceBar if self.agent_menu_bar => {
                 eprintln!("ice-rust: the Ice Bar is not available on macOS 27 yet");
             }
