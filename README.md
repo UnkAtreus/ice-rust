@@ -62,7 +62,8 @@ it (see [Differences from Ice](#differences-from-ice)).
 - **Ice Bar panel with click-through.** With Use Ice Bar on (the default), a
   click on the icon opens a panel below the menu bar with an image of each
   hidden item. Clicking an image reveals that item's section and clicks the
-  real item.
+  real item. Hovering an image, or a tile in Menu Bar Layout, shows the
+  name of the app that owns the item.
 - **Hide app menus.** With Use Ice Bar off, when the items you show reach
   the menus of the app in front, ice-rust hides those menus until the items
   hide again, so macOS has room to draw every item. ice-rust becomes the

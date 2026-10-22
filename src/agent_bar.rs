@@ -142,6 +142,8 @@ pub struct AgentLayout {
     pub frames: Vec<(WindowId, Rect)>,
     /// Apple's items, which stay where MenuBarAgent puts them.
     pub apple: Vec<WindowId>,
+    /// The process of each other app's item, for its app name.
+    pub owners: Vec<(WindowId, i32)>,
     /// Items folded into the system overflow, which have no place to read.
     pub folded: usize,
 }
@@ -328,6 +330,7 @@ pub fn agent_layout(slots: &[AgentSlot], own_pid: i32, ours: &OurFrames) -> Opti
 
     let mut chains = SectionChains::default();
     let mut apple = Vec::new();
+    let mut owners = Vec::new();
     for (slot, &id) in on_bar.iter().zip(&ids) {
         if skip.contains(&Some(id)) {
             continue;
@@ -336,6 +339,8 @@ pub fn agent_layout(slots: &[AgentSlot], own_pid: i32, ours: &OurFrames) -> Opti
         let is_apple = identifier.starts_with(APPLE_ITEM_PREFIX);
         if is_apple {
             apple.push(id);
+        } else if let Some(pid) = slot.pid.filter(|&pid| pid != own_pid) {
+            owners.push((id, pid));
         }
         // The names the macOS 26 rules know (`LOCKED_TITLES`).
         let title = match identifier {
@@ -374,6 +379,7 @@ pub fn agent_layout(slots: &[AgentSlot], own_pid: i32, ours: &OurFrames) -> Opti
             .map(|(s, id)| (*id, s.frame))
             .collect(),
         apple,
+        owners,
         folded,
     })
 }
@@ -676,6 +682,18 @@ mod tests {
         assert_eq!(layout.anchors.always_hidden_divider, Some(ids[0]));
         assert_eq!(layout.spacers[0], Some(ids[6]));
         assert_eq!(layout.apple, vec![ids[9], ids[10]]);
+        // Every other process's item, Spotlight's too: the app name lookup
+        // leaves Apple's apps out by bundle id.
+        assert_eq!(
+            layout.owners,
+            vec![
+                (ids[1], 2179),
+                (ids[2], 2179),
+                (ids[3], 2179),
+                (ids[4], 646),
+                (ids[5], 464)
+            ]
+        );
         assert_eq!(layout.folded, 0);
 
         let names = ControlNames::ours();

@@ -30,6 +30,7 @@ use super::brand;
 use super::capture::{self, ItemImage};
 use super::events::{self, InputError};
 use super::ice_bar::{BarItem, ClickHandler, IceBar};
+use super::item_names;
 use super::layout_pane::{self, LayoutSnapshot};
 use super::menu_bar_space;
 use super::menu_icon::{self, CustomIcon};
@@ -1040,6 +1041,8 @@ impl Controller {
         };
         let (items, sizes, glyphs) = match items {
             Ok(list) => {
+                let bounds: Vec<(WindowId, Rect)> = list.iter().map(|w| (w.id, w.bounds)).collect();
+                item_names::look_up(&bounds);
                 // Bounded (G5): a stuck capture leaves placeholder tiles.
                 let result = capture::capture_items_bounded(&list);
                 if let Err(err) = &result {
@@ -1406,7 +1409,9 @@ fn bar_items(list: &[WindowRecord], images: &[ItemImage]) -> (Vec<BarItem>, Vec<
     let mut items = Vec::with_capacity(list.len());
     let mut sizes = Vec::with_capacity(list.len());
     for (window, captured) in list.iter().zip(images) {
-        let title = window.title_str().unwrap_or("Item").to_string();
+        // Mostly the owning app's name once `item_names` found it; apps
+        // name their items "Item-0" or a UUID.
+        let title = item_names::name(window.id, window.title_str().unwrap_or("Item"));
         let usable = captured.image.as_deref().filter(|_| !captured.transparent);
         let (image, size) = match usable {
             Some(cg) => {

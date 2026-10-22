@@ -13,6 +13,7 @@ pub mod geometry;
 pub mod hotkeys;
 pub mod image_check;
 pub mod input_tag;
+pub mod item_names;
 pub mod login_item;
 pub mod menu_icon;
 pub mod model;

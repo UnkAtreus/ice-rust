@@ -1233,3 +1233,28 @@ synthetic input inside the VM only):
 Hand test on macOS 26 (2026-10-17, maintainer, dist build): recording,
 using the hotkeys from another app, the Use Ice Bar hotkey, the refusal
 message and clearing all passed.
+
+## Item names in tooltips (maintainer request 2026-10-22)
+
+Tooltips in the Ice Bar and Menu Bar Layout showed window titles such as
+"Item-0" or a UUID, the autosave names apps give their items. They now name
+the owning app; [technical.md](technical.md#item-names) describes the
+behavior.
+
+| Decision | Why |
+|---|---|
+| Match an app's `AXExtrasMenuBar` items to windows by center, within 1 pt | The frames differ in width: Shottr's item is 24 pt wide in a 38 pt window (x 4718 against 4711) on macOS 26.7.1. The centers agree. |
+| Look up only the windows on show (the Layout model's tiles, the Ice Bar's items) | A probe over all 125 status windows matched copies on other displays and stale copies to the wrong apps, such as a 5016 pt wide ice-rust copy to Shottr. |
+| A helper thread, owners cached by window id, a 60 s wait before an unclaimed window is asked again | The first Accessibility contact with an app took about 20 ms (1.4 s for 79 apps); later passes about 0.1 s. One lookup at a time, so lookups do not pile up behind an app that does not answer (0.1 s messaging timeout per app). |
+| Other apps asked first | Apple's items mostly keep their own names, so the names that matter arrive first. |
+| Tooltips read on hover (`NSViewToolTipOwner`), not set once | A name found after the bar opened still shows. Tooltip rectangles are removed before the tiles go, since the tiles own them. |
+| Apple's items keep their own name unless it is made up | "WiFi" or "Clock" says more than "Control Center"; "Item-0" does not. |
+| macOS 27 from MenuBarAgent's process ids | The slots carry the pid already; no lookup is needed. |
+
+Host check (macOS 26.7.1, a probe that loads the Layout model and runs
+the lookup): 21 of 29 tiles named, every third-party item right (Discord,
+Notion, LINE, Shottr, CodexBar, RunCat Neo, Telegram, Tailscale, Raycast
+and others), Apple's items unchanged, "Item-0" named TextInputMenuAgent and
+`com.apple.menuextra.TimeMachine` shown as "Time Machine". The last name
+arrived about 1.24 s after launch. The maintainer then used a build by hand
+and found the tooltips right.

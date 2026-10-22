@@ -8,6 +8,7 @@ pub mod hotkeys;
 pub mod hotkeys_pane;
 pub mod ice_bar;
 pub mod installer;
+pub mod item_names;
 pub mod layout_pane;
 pub mod login_item;
 pub mod menu_bar_space;

@@ -2,19 +2,23 @@
 //! of the hidden items (M8).
 
 use std::cell::Cell;
+use std::ffi::c_void;
+use std::ptr;
 use std::rc::Rc;
 
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSBackingStoreType, NSBezierPath, NSColor, NSEvent, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSImage, NSPanel, NSResponder, NSStringDrawing, NSView,
-    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSForegroundColorAttributeName, NSImage, NSPanel, NSResponder, NSStringDrawing, NSToolTipTag,
+    NSView, NSViewToolTipOwner, NSWindowAnimationBehavior, NSWindowCollectionBehavior,
+    NSWindowStyleMask,
 };
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSDictionary, NSObject, NSPoint, NSRect, NSString};
 
+use super::item_names;
 use super::ui::srgb;
 use crate::bar_layout::{BarLayout, is_click, overflow_label};
 use crate::image_check::prefers_dark_text;
@@ -119,6 +123,26 @@ define_class!(
             }
         }
     }
+
+    // SAFETY: the protocol's methods come from NSObject; none is overridden.
+    unsafe impl NSObjectProtocol for ItemView {}
+
+    // SAFETY: view:stringForToolTip:point:userData: takes an NSView, an
+    // NSToolTipTag, an NSPoint and a void pointer and returns an NSString,
+    // as NSViewToolTipOwner declares. The user data is never read.
+    unsafe impl NSViewToolTipOwner for ItemView {
+        #[unsafe(method_id(view:stringForToolTip:point:userData:))]
+        fn tool_tip(
+            &self,
+            _view: &NSView,
+            _tag: NSToolTipTag,
+            _point: NSPoint,
+            _data: *mut c_void,
+        ) -> Retained<NSString> {
+            let ivars = self.ivars();
+            NSString::from_str(&item_names::name(ivars.id, &ivars.title))
+        }
+    }
 );
 
 impl ItemView {
@@ -140,6 +164,16 @@ impl ItemView {
         });
         // SAFETY: initWithFrame: is NSView's designated initializer.
         unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+
+    /// A tooltip with the name of the item's app, read when the pointer
+    /// rests on the tile: the name may arrive after the bar opened
+    /// (`item_names::look_up`). `IceBar::release_content` removes it.
+    fn name_on_hover(&self) {
+        let owner: &AnyObject = self;
+        // SAFETY: the owner is this view, which implements
+        // NSViewToolTipOwner. The user data is null and never read.
+        unsafe { self.addToolTipRect_owner_userData(self.bounds(), owner, ptr::null_mut()) };
     }
 
     fn draw_placeholder(&self, bounds: NSRect) {
@@ -306,9 +340,10 @@ impl IceBar {
                 on_click.clone(),
                 bar_color,
             );
-            view.setToolTip(Some(&NSString::from_str(&item.title)));
+            view.name_on_hover();
             content.addSubview(&view);
         }
+        self.release_content();
         self.panel.setContentView(Some(&content));
         self.panel.setFrame_display(ns_rect(frame), true);
         self.panel.orderFrontRegardless();
@@ -316,6 +351,17 @@ impl IceBar {
 
     pub fn close(&self) {
         self.panel.orderOut(None);
+        self.release_content();
         self.panel.setContentView(None);
+    }
+
+    /// Removes the tiles' tooltip rectangles, which name the tiles
+    /// themselves as owners (`ItemView::name_on_hover`), before the tiles go.
+    fn release_content(&self) {
+        if let Some(content) = self.panel.contentView() {
+            for view in content.subviews() {
+                view.removeAllToolTips();
+            }
+        }
     }
 }

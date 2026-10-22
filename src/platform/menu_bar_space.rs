@@ -144,6 +144,20 @@ fn menu_bar_agent() -> Option<CFRetained<CFType>> {
     application(agent.iter().next()?.processIdentifier())
 }
 
+/// The frames of the status items of the app `pid`, in CG space, from its
+/// extras menu bar (`item_names`). Empty without items, without
+/// Accessibility, or without an answer in time. Runs on any thread; never
+/// ask our own process off the main thread.
+pub fn extras_item_frames(pid: i32) -> Vec<Rect> {
+    let Some(bar) = application(pid).and_then(|app| attribute(&app, "AXExtrasMenuBar")) else {
+        return Vec::new();
+    };
+    children(&bar)
+        .iter()
+        .filter_map(|item| frame(item))
+        .collect()
+}
+
 /// The slots of each MenuBarAgent menu bar window, one list per window in
 /// MenuBarAgent's order. `None` without MenuBarAgent or Accessibility.
 pub fn agent_windows() -> Option<Vec<Vec<AgentSlot>>> {

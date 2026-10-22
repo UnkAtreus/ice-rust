@@ -33,12 +33,13 @@ use objc2_core_graphics::CGImage;
 use objc2_foundation::{NSDictionary, NSObject, NSPoint, NSRect, NSSize, NSString, NSTimer};
 
 use super::capture::{self, CaptureMethod, ItemImage, SlotSource};
+use super::item_names;
 use super::menu_bar_space;
 use super::timer;
 use super::ui::{Weight, font, is_dark, rect, redraw_on_resize, srgb, tinted_symbol};
 use super::windows;
 use crate::agent_bar::{AgentLayout, OurFrames, agent_layout, bar_slots};
-use crate::arrange::{Anchors, BarModel, bar_at, clamp_insertion, marker_x};
+use crate::arrange::{Anchors, BarModel, Tile, bar_at, clamp_insertion, marker_x};
 use crate::bar_scroll::{
     StripLayout, autoscroll_offset, document_x, insertion_at, keep_right_distance, strip_layout,
     visible_x,
@@ -246,6 +247,7 @@ pub fn load_snapshot(names: &ControlNames, frames: &ControlFrames) -> LayoutSnap
         Ok(read) => read,
         Err(notice) => return LayoutSnapshot::empty(&notice),
     };
+    item_names::look_up(&tile_bounds(&model));
 
     let displays = windows::displays();
     let icon_rect = icon.as_ref().map(|w| w.bounds).or(frames.icon);
@@ -327,8 +329,25 @@ pub fn read_agent(ours: &OurFrames, display: &Rect) -> Result<AgentLayout, Strin
         .ok_or("Accessibility permission needed to read the menu bar")?;
     let own = std::process::id() as i32;
     let slots = bar_slots(&windows, own, display);
-    agent_layout(&slots, own, ours)
-        .ok_or_else(|| "The hidden divider is not in the menu bar".to_string())
+    let layout = agent_layout(&slots, own, ours)
+        .ok_or_else(|| "The hidden divider is not in the menu bar".to_string())?;
+    item_names::note_owners(&layout.owners);
+    Ok(layout)
+}
+
+/// Every tile with its bounds, for `item_names::look_up`.
+fn tile_bounds(model: &BarModel) -> Vec<(WindowId, Rect)> {
+    Section::ALL
+        .iter()
+        .flat_map(|&section| model.bar(section))
+        .map(|tile| (tile.id, tile.bounds))
+        .collect()
+}
+
+/// The name a tile shows: mostly its app's once known (`item_names`).
+/// Apps choose names such as "Item-0" or a UUID for their items.
+fn tile_name(model: &BarModel, tile: &Tile) -> String {
+    item_names::name(tile.id, &model.display_name(tile))
 }
 
 /// `load_order` for the macOS 27 menu bar.
@@ -1297,7 +1316,7 @@ impl LayoutCanvas {
         Some(Hit {
             id: tile.id,
             locked: tile.locked,
-            name: model.display_name(tile),
+            name: tile_name(model, tile),
             origin: (
                 g.strip.x + visible_x(slot.frame.x, offset),
                 g.strip.y + slot.frame.y,
@@ -1316,7 +1335,7 @@ impl LayoutCanvas {
             .iter()
             .find(|s| s.frame.contains(point.0, point.1))?;
         let tile = model.bar(section).get(slot.index)?;
-        Some(model.display_name(tile))
+        Some(tile_name(model, tile))
     }
 
     /// One tooltip rectangle per tile, owned by its strip. The rectangles

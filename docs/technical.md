@@ -54,7 +54,8 @@ on: macOS 26.3 on Apple Silicon, with four displays.
   Settings..., Arrange Menu Bar Items..., and Quit ice-rust.
 - Ice Bar mode (on by default): the dividers stay expanded and a click on the
   icon opens a panel under the menu bar with an image of each hidden item;
-  Option-click opens it with the always-hidden items. Clicking an image
+  Option-click opens it with the always-hidden items. Hovering an image
+  shows the item's name (see [Item names](#item-names)). Clicking an image
   closes the panel, reveals that item's section, waits until the item is on
   screen (polling every 20 ms for up to 1 s), and clicks the real item.
 - Revealed sections hide again by one of three strategies, as in Ice
@@ -92,8 +93,9 @@ The logic lives in pure modules with unit tests and no macOS dependencies:
 `bar_scroll`, `rehide`, `rehide_policy` (smart and focused-app rehide,
 API in `docs/clean-room/smart-rehide/API.md`), `input_tag`, `worker`, `image_check`, `brand` (the
 embedded artwork), `menu_icon` (the icon styles), `triggers` (show on
-click, hover and scroll), `app_menus` (hide application menus), and the
-defaults half of `settings`. The macOS glue is under `src/platform/` and
+click, hover and scroll), `app_menus` (hide application menus),
+`item_names` (app names for the item tooltips), and the defaults half of
+`settings`. The macOS glue is under `src/platform/` and
 compiles only on macOS. The binary (`src/main.rs`) parses the command line
 and dispatches to the menu bar app, `probe` or `render-settings`.
 
@@ -203,7 +205,7 @@ under Custom image.
 | Permission | Needed for | API |
 |---|---|---|
 | Screen Recording | Reading other processes' window titles (to find the divider) and capturing item images | `CGPreflightScreenCaptureAccess`, `CGRequestScreenCaptureAccess` |
-| Accessibility / event posting | Clicking the real item after a click in the Ice Bar, moving items from the Menu Bar Layout pane, reading where the frontmost app's menus end for Show on click and Show on hover, and finding the clicked app for Smart rehide (without it, Smart falls back to the window list) | `CGPreflightPostEventAccess`, `CGRequestPostEventAccess`, `AXIsProcessTrustedWithOptions`, `AXUIElementCopyAttributeValue`, `AXUIElementCopyElementAtPosition` |
+| Accessibility / event posting | Clicking the real item after a click in the Ice Bar, moving items from the Menu Bar Layout pane, reading where the frontmost app's menus end for Show on click and Show on hover, finding the clicked app for Smart rehide (without it, Smart falls back to the window list), and naming items by their app in tooltips (without it, tooltips show window titles) | `CGPreflightPostEventAccess`, `CGRequestPostEventAccess`, `AXIsProcessTrustedWithOptions`, `AXUIElementCopyAttributeValue`, `AXUIElementCopyElementAtPosition` |
 
 On macOS 26 every status item window, including ice-rust's own, belongs to
 Control Center, so even finding its own divider by title needs Screen
@@ -260,7 +262,7 @@ bars stretch.
   else from the window's appearance; the Ice Bar uses the same fill. Each bar shows
   the real item images right-aligned in menu bar order, with placeholder
   tiles (a dashed question mark) where a capture fails; hovering a tile
-  shows its name. Every item is in its bar: a section wider than its bar
+  shows its name (see [Item names](#item-names)). Every item is in its bar: a section wider than its bar
   scrolls sideways like a horizontal scroll view, with a trackpad swipe, a
   scroll wheel (vertical wheel steps scroll sideways) or the overlay
   scroller. A bar that overflows opens at its right end, like the menu bar,
@@ -601,6 +603,40 @@ the icon's position comes from the frame of its AppKit button window, and
 as a last resort the display under the pointer decides. When no display is
 "active" in the CoreGraphics sense (for example, all displays asleep), the
 online display list is used, skipping mirrors.
+
+## Item names
+
+The tooltips of the Ice Bar images and the Menu Bar Layout tiles name each
+item by the app that owns it. On macOS 26 every status item window belongs
+to Control Center and is titled with the autosave name its app chose, often
+"Item-0" or a UUID, so the owner comes from Accessibility instead: each
+running app with a user interface lists its items under
+`AXExtrasMenuBar`, and the item whose frame has the same center as a
+window, within 1 pt, is that window's item. Only the windows the pane or
+the Ice Bar shows are looked up; copies on other displays and stale copies
+could match the wrong app.
+
+The lookup runs on a helper thread when the Ice Bar opens or the pane
+loads, for the windows without an owner yet, asking other apps before
+Apple's and stopping once every window is claimed. A window no app claimed
+is looked up again after 60 s at the earliest. ice-rust's own process is
+never asked (its items have names). The tooltip text is read when the
+pointer rests on a tile, so a name found after the bar opened still shows.
+On the development host (macOS 26.7.1, 79 apps) the first lookup after
+launch took about 1.2 to 1.4 s, later ones about 0.1 s, and the main thread
+spent about 10 ms on it.
+
+On macOS 27 MenuBarAgent reports each item's process (see
+[The macOS 27 menu bar](#the-macos-27-menu-bar-v18)), so the app name comes
+from `NSRunningApplication` without a lookup. That path is not tested live
+yet.
+
+Other apps' items show the app's name. Apple's items keep their own name
+(WiFi, Battery, Clock), which says more than the app's (Control Center),
+unless it is a made-up "Item-N"; then the app's name shows (an input menu
+"Item-0" became TextInputMenuAgent). An identifier such as
+`com.apple.menuextra.TimeMachine` is spelled out as "Time Machine". Without
+Accessibility, or before the lookup ends, a tooltip shows the window title.
 
 ## Stored settings and item placement
 
