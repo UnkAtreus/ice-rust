@@ -62,7 +62,8 @@ it (see [Differences from Ice](#differences-from-ice)).
 - **Ice Bar panel with click-through.** With Use Ice Bar on (the default), a
   click on the icon opens a panel below the menu bar with an image of each
   hidden item. Clicking an image reveals that item's section and clicks the
-  real item. Hovering an image, or a tile in Menu Bar Layout, shows the
+  real item. When the items are wider than the display, the panel scrolls
+  sideways. Hovering an image, or a tile in Menu Bar Layout, shows the
   name of the app that owns the item.
 - **Hide app menus.** With Use Ice Bar off, when the items you show reach
   the menus of the app in front, ice-rust hides those menus until the items
@@ -123,7 +124,7 @@ of this repository.
 | Automatically rehide menu bar items | Yes | Yes | Smart, Timed (5 to 60 s, held while a menu or panel is open) and Focused app. Smart asks Accessibility which app took a click, so it needs no Screen Recording. |
 | Hide application menus when they overlap with shown items | Yes | Yes | "Hide app menus" on the Hidden Items page, on by default, for Use Ice Bar off. Needs Accessibility. |
 | Drag and drop interface to arrange individual items | Yes | Yes | Moves on-screen items only: the sections involved are revealed first. |
-| Display hidden items in a separate bar (Ice Bar) | Yes | Yes | Clicking an image reveals the whole section, then clicks the real item. |
+| Display hidden items in a separate bar (Ice Bar) | Yes | Yes | Clicking an image reveals the whole section, then clicks the real item. Scrolls sideways when wider than the display. |
 | Search menu bar items | Yes | No | |
 | Menu bar item spacing | Yes (beta) | No | |
 | Profiles for menu bar layout | Roadmap | No | |
@@ -184,7 +185,6 @@ need no permission.
 
 Planned, in rough priority order. Nothing here is implemented yet.
 
-- [ ] Horizontal scrolling in the Ice Bar instead of the "+N" tile
 - [ ] Search menu bar items
 
 ## Screenshots
@@ -515,10 +515,6 @@ What these numbers do not cover:
   and closing Settings again does not add to it.
 - **Move tuning.** Live moves landed in the right place, but the move timings
   and drop offsets are starting values that have not been tuned.
-- **Ice Bar overflow.** When the hidden items are wider than the display,
-  the Ice Bar shows the items nearest the divider and a "+N" tile for the
-  rest. Those items are reachable only with Use Ice Bar off. The Menu Bar
-  Layout bars scroll instead.
 - **Room in the menu bar.** If a revealed section does not fit next to the
   app menus or the notch, macOS draws only what fits, and click-through gives
   up on an item that does not reach the screen within 1 s. A move in Menu

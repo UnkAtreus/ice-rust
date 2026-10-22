@@ -1,13 +1,16 @@
-//! Scrollable layout bars (v1.2, L3). Each bar of the Menu Bar Layout pane
-//! is a horizontal strip that scrolls. Positions in a strip are document
-//! coordinates: x from the strip's left end, whatever part is scrolled into
-//! view, and y from its top. The scroll offset is the document x at the
-//! left edge of the visible part, from 0 (left end) to `max_offset` (right
-//! end). Everything here is pure.
+//! Scrollable bars. Each bar of the Menu Bar Layout pane (v1.2, L3) and
+//! the Ice Bar (v1.10) is a horizontal strip that scrolls. Positions in a
+//! strip are document coordinates: x from the strip's left end, whatever
+//! part is scrolled into view, and y from its top. The scroll offset is the
+//! document x at the left edge of the visible part, from 0 (left end) to
+//! `max_offset` (right end). Everything here is pure.
 
 use crate::arrange::insertion_index;
 use crate::bar_layout::{BarLayout, layout};
 use crate::model::Rect;
+
+/// Points per line for scroll wheels without precise deltas.
+pub const LINE_SCROLL: f64 = 10.0;
 
 /// One bar's tiles laid out in its strip.
 #[derive(Clone, Debug, PartialEq)]
@@ -22,6 +25,13 @@ pub struct StripLayout {
     pub max_offset: f64,
 }
 
+impl StripLayout {
+    /// Width of the part in view.
+    pub fn visible_width(&self) -> f64 {
+        self.document_width - self.max_offset
+    }
+}
+
 impl Default for StripLayout {
     fn default() -> Self {
         Self {
@@ -29,8 +39,6 @@ impl Default for StripLayout {
                 width: 0.0,
                 height: 0.0,
                 slots: Vec::new(),
-                dropped: 0,
-                overflow: None,
             },
             document_width: 0.0,
             max_offset: 0.0,
@@ -53,7 +61,7 @@ pub fn strip_layout(
 ) -> StripLayout {
     let visible_width = visible_width.max(0.0);
     let content_height = (height - 2.0 * inset).max(0.0);
-    let mut row = layout(sizes, content_height, padding, f64::INFINITY, (0.0, 0.0));
+    let mut row = layout(sizes, content_height, padding);
     let document_width = visible_width.max(row.width);
     let dx = document_width - row.width;
     for slot in &mut row.slots {
@@ -65,6 +73,32 @@ pub fn strip_layout(
         document_width,
         max_offset: document_width - visible_width,
     }
+}
+
+/// The Ice Bar's strip (v1.10): every item, in a strip as wide as the row
+/// but no wider than `max_width`, the display. A wider row scrolls; like
+/// Ice's, it opens at its right end (`max_offset`), where the items next to
+/// the divider are.
+pub fn ice_bar_strip(
+    sizes: &[(f64, f64)],
+    height: f64,
+    padding: f64,
+    max_width: f64,
+) -> StripLayout {
+    let row = layout(sizes, height, padding).width;
+    strip_layout(sizes, row.min(max_width), height, 0.0, padding)
+}
+
+/// The offset after one step of a scroll wheel without precise deltas,
+/// `dy` lines, over a strip that scrolls only sideways: a `dy` below zero
+/// moves toward the right end, `LINE_SCROLL` points per line.
+/// `None` when the strip fits or the event is not such a step, so the
+/// scroll view handles it.
+pub fn wheel_offset(precise: bool, dx: f64, dy: f64, offset: f64, max_offset: f64) -> Option<f64> {
+    if precise || dx != 0.0 || dy == 0.0 || max_offset <= 0.0 {
+        return None;
+    }
+    Some((offset - dy * LINE_SCROLL).clamp(0.0, max_offset))
 }
 
 /// The offset after the strip or its content changed size. It keeps the
@@ -165,8 +199,6 @@ mod tests {
                 Rect::new(178.0, 6.0, 20.0, 30.0)
             ]
         );
-        assert_eq!(strip.layout.dropped, 0);
-        assert_eq!(strip.layout.overflow, None);
     }
 
     #[test]
@@ -178,8 +210,6 @@ mod tests {
         assert_eq!(strip.document_width, 542.0);
         assert_eq!(strip.max_offset, 242.0);
         assert_eq!(strip.layout.slots.len(), 15);
-        assert_eq!(strip.layout.dropped, 0);
-        assert_eq!(strip.layout.overflow, None);
         let f = frames(&strip);
         assert_eq!(f[0], Rect::new(2.0, 6.0, 34.0, 30.0));
         assert_eq!(f[14].max_x(), 540.0);
@@ -215,6 +245,70 @@ mod tests {
         let strip = strip_layout(&[(30.0, 30.0)], -5.0, 42.0, 6.0, 2.0);
         assert_eq!(strip.document_width, 34.0);
         assert_eq!(strip.max_offset, 34.0);
+    }
+
+    #[test]
+    fn ice_bar_that_fits_is_as_wide_as_its_row() {
+        let strip = ice_bar_strip(
+            &[(16.0, 30.0), (17.0, 30.0), (19.0, 30.0)],
+            30.0,
+            4.0,
+            2560.0,
+        );
+        assert_eq!(strip.document_width, 68.0);
+        assert_eq!(strip.visible_width(), 68.0);
+        assert_eq!(strip.max_offset, 0.0);
+        let xs: Vec<f64> = frames(&strip).iter().map(|f| f.x).collect();
+        assert_eq!(xs, vec![4.0, 24.0, 45.0]);
+        assert_eq!(frames(&strip)[0].y, 0.0);
+    }
+
+    #[test]
+    fn ice_bar_wider_than_the_display_scrolls_from_its_right_end() {
+        // 100 items of 16 pt with 4 pt padding: 4 + 100 x 20 = 2004 pt.
+        let strip = ice_bar_strip(&[(16.0, 30.0); 100], 30.0, 4.0, 1512.0);
+        assert_eq!(strip.document_width, 2004.0);
+        assert_eq!(strip.visible_width(), 1512.0);
+        assert_eq!(strip.max_offset, 492.0);
+        assert_eq!(strip.layout.slots.len(), 100);
+        // Opened at the right end, the last item ends 4 pt inside the
+        // panel and the first is out of view.
+        let f = frames(&strip);
+        assert_eq!(visible_x(f[99].max_x(), strip.max_offset), 1508.0);
+        assert!(visible_x(f[0].max_x(), strip.max_offset) < 0.0);
+        // Scrolled to the left end, the first item shows.
+        assert_eq!(visible_x(f[0].x, 0.0), 4.0);
+    }
+
+    #[test]
+    fn ice_bar_exactly_as_wide_as_the_display_does_not_scroll() {
+        let strip = ice_bar_strip(&[(16.0, 30.0); 100], 30.0, 4.0, 2004.0);
+        assert_eq!(strip.visible_width(), 2004.0);
+        assert_eq!(strip.max_offset, 0.0);
+    }
+
+    #[test]
+    fn ice_bar_scales_tall_images_and_holds_a_message() {
+        let strip = ice_bar_strip(&[(20.0, 60.0)], 30.0, 4.0, 2560.0);
+        assert_eq!(frames(&strip), vec![Rect::new(4.0, 0.0, 10.0, 30.0)]);
+        let empty = ice_bar_strip(&[], 30.0, 4.0, 2560.0);
+        assert_eq!((empty.document_width, empty.max_offset), (8.0, 0.0));
+    }
+
+    #[test]
+    fn wheel_steps_scroll_sideways() {
+        // Three lines toward the right end, then back.
+        assert_eq!(wheel_offset(false, 0.0, -3.0, 100.0, 492.0), Some(130.0));
+        assert_eq!(wheel_offset(false, 0.0, 3.0, 100.0, 492.0), Some(70.0));
+        // Clamped at both ends.
+        assert_eq!(wheel_offset(false, 0.0, -3.0, 480.0, 492.0), Some(492.0));
+        assert_eq!(wheel_offset(false, 0.0, 3.0, 20.0, 492.0), Some(0.0));
+        // A trackpad, a sideways step, no step, or a strip that fits:
+        // the scroll view handles them.
+        assert_eq!(wheel_offset(true, 0.0, -3.0, 100.0, 492.0), None);
+        assert_eq!(wheel_offset(false, 2.0, -3.0, 100.0, 492.0), None);
+        assert_eq!(wheel_offset(false, 0.0, 0.0, 100.0, 492.0), None);
+        assert_eq!(wheel_offset(false, 0.0, -3.0, 0.0, 0.0), None);
     }
 
     #[test]

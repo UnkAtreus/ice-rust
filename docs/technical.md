@@ -54,7 +54,11 @@ on: macOS 26.3 on Apple Silicon, with four displays.
   Settings..., Arrange Menu Bar Items..., and Quit ice-rust.
 - Ice Bar mode (on by default): the dividers stay expanded and a click on the
   icon opens a panel under the menu bar with an image of each hidden item;
-  Option-click opens it with the always-hidden items. Hovering an image
+  Option-click opens it with the always-hidden items. Items wider than the
+  display scroll sideways: the panel is as wide as the display, opens at
+  its right end with the scroller shown for a moment, and scrolls with a
+  trackpad swipe, a scroll wheel (vertical steps scroll sideways, 10 pt
+  per line) or the overlay scroller. Hovering an image
   shows the item's name (see [Item names](#item-names)). Clicking an image
   closes the panel, reveals that item's section, waits until the item is on
   screen (polling every 20 ms for up to 1 s), and clicks the real item.
@@ -871,10 +875,9 @@ window per display (`crate::agent_bar`, `platform/app/agent.rs`, research in
   frees the room the app menus take (see
   [Hide application menus](#hide-application-menus-v16)); nothing frees the
   notch.
-- When the hidden items are wider than the display, the Ice Bar keeps the
-  items nearest the divider and shows a "+N" tile, which ignores clicks, in
-  place of the rest. Those items are reachable only with Ice Bar mode off.
-  The layout bars scroll instead.
+- When the hidden items are wider than the display, the Ice Bar is as wide
+  as the display and scrolls sideways (v1.10), like Ice's; it opens at its
+  right end, next to the divider.
 - Discovery uses the public window list and geometry only. Ice uses private
   CoreGraphics calls for the menu bar window list, spaces, and the active menu
   bar display, and an XPC helper with Accessibility to attribute windows to

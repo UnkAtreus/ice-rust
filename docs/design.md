@@ -187,7 +187,8 @@ when the chain is empty.
    transparent: draw a placeholder tile with the window title.
 3. Panel height = menu bar height of the active display. Items laid out
    left-to-right with 4 pt padding. Panel x centered under the icon window,
-   clamped to the screen. Panel y from M8.
+   clamped to the screen. Panel y from M8. A row wider than the display
+   scrolls (v1.10).
 4. Close on: click outside the panel (global left/right mouse-down monitor),
    active space change, screen parameter change, toggle.
 
@@ -1258,3 +1259,34 @@ and others), Apple's items unchanged, "Item-0" named TextInputMenuAgent and
 `com.apple.menuextra.TimeMachine` shown as "Time Machine". The last name
 arrived about 1.24 s after launch. The maintainer then used a build by hand
 and found the tooltips right.
+
+## v1.10: a scrolling Ice Bar (roadmap, 2026-10-23)
+
+The Ice Bar dropped the leftmost items that did not fit on the display and
+showed a "+N" tile, which ignored clicks, in their place; those items were
+reachable only with Use Ice Bar off. Ice instead caps the bar at the screen
+width and scrolls horizontally, anchored trailing (evidence document,
+Ice Bar layout). ice-rust now does the same.
+
+| Decision | Why |
+|---|---|
+| `bar_scroll::ice_bar_strip`: the row of `strip_layout` in a strip as wide as the row, at most the display | One layout for both scrolling bars. The "+N" tile, `dropped` and the width limit of `bar_layout::layout` are gone. |
+| Opens at the right end | The items next to the divider, which showed before, still show first; Ice anchors trailing too. |
+| The panel's content view is layer-backed with the bar's corner radius and masks to it | Tiles that scroll past an end stay inside the rounded corners instead of being cut square. |
+| The Layout pane's `BarScrollView` (always the overlay scroller) and knob style | A legacy scroller would take its height from a bar only a menu bar tall. |
+| Vertical wheel steps scroll sideways (`bar_scroll::wheel_offset`, 10 pt per line, shared with the Layout pane); trackpads go to the scroll view | A mouse has no horizontal wheel. Trackpad swipes are already precise and sideways. |
+| The scroller flashes when the bar opens and scrolls | It replaces the "+N" hint as the sign that more items are out of view. |
+| A bar that fits does not bounce sideways | The same rule as the Layout bars. |
+| `allowsToolTipsWhenApplicationIsInactive` on the panel | ice-rust is not the active app while the bar is open, so AppKit showed no tooltips there; Ice sets the same. |
+
+Harness check (macOS 26.7.1, 2026-10-23): a scratch program opened the Ice
+Bar in its own process with 60 placeholder tiles and a 600 pt limit, then
+scrolled it by calling the views' methods (nothing was posted to the
+system). The panel was 600 pt wide with a 1804 pt document and opened at
+offset 1204, showing tiles 41 to 60 with the scroller flashed; a wheel
+event of 3 lines up moved it to 1174 and 2 lines down to 1194; at offset
+0 tiles 1 to 20 showed, and at 213 a tile cut at the left edge stayed
+inside the rounded corner. Five tiles gave a 154 pt panel that did not
+scroll or bounce. The panel allowed tooltips while inactive. Real items
+wider than a display were not available on the host (P14), and trackpad
+scrolling and tooltips in the open bar need a hand test.

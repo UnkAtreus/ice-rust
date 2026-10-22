@@ -42,7 +42,7 @@ use crate::agent_bar::{AgentLayout, OurFrames, agent_layout, bar_slots};
 use crate::arrange::{Anchors, BarModel, Tile, bar_at, clamp_insertion, marker_x};
 use crate::bar_scroll::{
     StripLayout, autoscroll_offset, document_x, insertion_at, keep_right_distance, strip_layout,
-    visible_x,
+    visible_x, wheel_offset,
 };
 use crate::brand;
 use crate::chain::{
@@ -73,8 +73,6 @@ const AUTOSCROLL_EDGE: f64 = 24.0;
 const AUTOSCROLL_MAX_STEP: f64 = 8.0;
 /// Auto-scroll timer period.
 const AUTOSCROLL_TICK: Duration = Duration::from_millis(30);
-/// Points per line for scroll wheels without precise deltas.
-const LINE_SCROLL: f64 = 10.0;
 /// SF Symbol drawn on a tile without an image.
 const PLACEHOLDER_SYMBOL: &str = "questionmark.square.dashed";
 
@@ -663,7 +661,7 @@ define_class!(
 );
 
 impl BarScrollView {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+    pub(super) fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(());
         // SAFETY: initWithFrame: is NSScrollView's designated initializer.
         unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
@@ -855,7 +853,7 @@ fn offset_of(bar: &BarViews) -> f64 {
 /// Scroller knob for a bar of the sampled `bar_color`: dark on a light bar,
 /// light on a dark one. Without a sample the bar takes the fallback fill of
 /// the window's appearance, and the default knob follows that appearance.
-fn knob_style(bar_color: Option<[f64; 3]>) -> NSScrollerKnobStyle {
+pub(super) fn knob_style(bar_color: Option<[f64; 3]>) -> NSScrollerKnobStyle {
     match bar_color {
         Some(color) if prefers_dark_text(color) => NSScrollerKnobStyle::Dark,
         Some(_) => NSScrollerKnobStyle::Light,
@@ -1367,22 +1365,20 @@ impl LayoutCanvas {
     /// its vertical steps into horizontal scrolling. Returns false to let
     /// the scroll view handle the event.
     fn wheel(&self, section: Section, event: &NSEvent) -> bool {
-        if event.hasPreciseScrollingDeltas() {
-            return false;
-        }
-        let (dx, dy) = (event.scrollingDeltaX(), event.scrollingDeltaY());
-        if dx != 0.0 || dy == 0.0 {
-            return false;
-        }
         let index = section_index(section);
         let max = self.ivars().state.borrow().strips[index].max_offset;
         let Some(bar) = self.bars().get(index) else {
             return false;
         };
-        if max <= 0.0 {
+        let Some(offset) = wheel_offset(
+            event.hasPreciseScrollingDeltas(),
+            event.scrollingDeltaX(),
+            event.scrollingDeltaY(),
+            offset_of(bar),
+            max,
+        ) else {
             return false;
-        }
-        let offset = (offset_of(bar) - dy * LINE_SCROLL).clamp(0.0, max);
+        };
         self.scroll_bar(index, offset);
         true
     }

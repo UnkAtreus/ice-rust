@@ -43,7 +43,8 @@ use super::updater::Updater;
 use super::windows;
 use crate::agent_bar;
 use crate::arrange::BarModel;
-use crate::bar_layout::{layout, overflow_label, text_tile_size};
+use crate::bar_layout::text_tile_size;
+use crate::bar_scroll::ice_bar_strip;
 use crate::chain::{
     DividerLookup, MSG_NO_ITEM_WINDOWS, find_divider_or_frame, find_titled, section_chains,
 };
@@ -1099,28 +1100,21 @@ impl Controller {
         bar_color: Option<[f64; 3]>,
     ) {
         let screen = cg_to_appkit(place.display.bounds, windows::primary_height());
-        // Sized for the largest count the tile can show.
-        let overflow_size = text_tile_size(&overflow_label(sizes.len()));
-        let bar_layout = layout(
-            sizes,
-            place.menu_bar_height,
-            BAR_PADDING,
-            screen.width,
-            overflow_size,
-        );
-        if bar_layout.dropped > 0 {
+        let strip = ice_bar_strip(sizes, place.menu_bar_height, BAR_PADDING, screen.width);
+        if strip.max_offset > 0.0 {
             eprintln!(
-                "ice-rust: {} of {} items do not fit in the Ice Bar",
-                bar_layout.dropped,
-                sizes.len()
+                "ice-rust: {} items take {:.0} pt, the display {:.0} pt; the Ice Bar scrolls",
+                sizes.len(),
+                strip.document_width,
+                screen.width
             );
         }
         let frame = ice_bar_frame(
             &screen,
             place.menu_bar_height,
             anchor,
-            bar_layout.width,
-            bar_layout.height,
+            strip.visible_width(),
+            strip.layout.height,
         );
 
         let me = self.me.clone();
@@ -1129,8 +1123,7 @@ impl Controller {
                 c.defer_click_through(id);
             }
         });
-        self.bar
-            .show(&frame, &bar_layout, items, &on_click, bar_color);
+        self.bar.show(&frame, &strip, items, &on_click, bar_color);
         self.status.set_icon_active(true);
         self.install_outside_monitor();
     }
