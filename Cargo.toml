@@ -1,6 +1,6 @@
 [package]
 name = "ice-rust"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "macOS menu bar manager: hides menu bar items behind dividers and shows them in a panel below the menu bar (a Rust port of Ice by Jordan Baird)"
