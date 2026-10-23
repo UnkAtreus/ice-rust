@@ -38,6 +38,8 @@ pub struct AgentSlot {
     pub frame: Rect,
     /// The process whose item fills the slot.
     pub pid: Option<i32>,
+    /// That process's bundle identifier, which outlives a relaunch.
+    pub app: Option<String>,
     /// The item's title, description or identifier.
     pub name: Option<String>,
     /// `AXIdentifier`, which Apple's own items carry
@@ -67,18 +69,24 @@ fn fnv1a(text: &str) -> u32 {
 }
 
 /// Ids for `slots` (left to right) that stay the same from one read to the
-/// next while the item's process and name do: there are no window ids on
-/// macOS 27. Several items of one process with one name are numbered left
-/// to right. Never 0, never repeated.
+/// next while the item's app and name do, also across a relaunch of the
+/// app (the macOS 27 Ice Bar remembers items by them, v1.12): there are no
+/// window ids on macOS 27. A slot without a bundle identifier goes by its
+/// process. Several items of one app with one name are numbered left to
+/// right. Never 0, never repeated.
 pub fn slot_ids(slots: &[AgentSlot]) -> Vec<WindowId> {
-    let mut seen: HashMap<(Option<i32>, Option<&str>), u32> = HashMap::new();
+    let mut seen: HashMap<(String, Option<&str>), u32> = HashMap::new();
     let mut used = HashSet::new();
     slots
         .iter()
         .map(|slot| {
             let label = slot.identifier.as_deref().or(slot.name.as_deref());
-            let ordinal = seen.entry((slot.pid, label)).or_insert(0);
-            let key = format!("{:?}|{}|{}", slot.pid, label.unwrap_or(""), ordinal);
+            let owner = match &slot.app {
+                Some(app) => app.clone(),
+                None => format!("{:?}", slot.pid),
+            };
+            let ordinal = seen.entry((owner.clone(), label)).or_insert(0);
+            let key = format!("{owner}|{}|{}", label.unwrap_or(""), ordinal);
             *ordinal += 1;
             let mut id = fnv1a(&key).max(1);
             while !used.insert(id) {
@@ -146,6 +154,11 @@ pub struct AgentLayout {
     pub owners: Vec<(WindowId, i32)>,
     /// Items folded into the system overflow, which have no place to read.
     pub folded: usize,
+    /// The ids of other apps' folded items MenuBarAgent lists; it lists
+    /// only some (docs/macos27.md).
+    pub folded_ids: Vec<WindowId>,
+    /// The system overflow control, when MenuBarAgent shows it.
+    pub overflow: Option<Rect>,
 }
 
 impl AgentLayout {
@@ -302,6 +315,14 @@ pub fn agent_layout(slots: &[AgentSlot], own_pid: i32, ours: &OurFrames) -> Opti
         .cloned()
         .collect();
     let folded = slots.len() - on_bar.len() - usize::from(overflow.is_some());
+    let folded_slots: Vec<AgentSlot> = slots
+        .iter()
+        .filter(|s| {
+            !s.overflow_control && is_folded(&s.frame, overflow.as_ref()) && s.pid != Some(own_pid)
+        })
+        .cloned()
+        .collect();
+    let folded_ids = slot_ids(&folded_slots);
     on_bar.sort_by(|a, b| a.frame.x.total_cmp(&b.frame.x));
     let ids = slot_ids(&on_bar);
     let ours_at = |name: &str, frame: Option<&Rect>| {
@@ -381,6 +402,8 @@ pub fn agent_layout(slots: &[AgentSlot], own_pid: i32, ours: &OurFrames) -> Opti
         apple,
         owners,
         folded,
+        folded_ids,
+        overflow,
     })
 }
 
@@ -593,6 +616,7 @@ mod tests {
         AgentSlot {
             frame: Rect::new(x, 0.0, width, 30.0),
             pid: Some(pid),
+            app: None,
             name: (!name.is_empty()).then(|| name.to_string()),
             identifier: identifier.map(str::to_string),
             overflow_control: false,
@@ -656,6 +680,17 @@ mod tests {
         let twins = [slot(10.0, 20.0, 7, "", None), slot(30.0, 20.0, 7, "", None)];
         let twin_ids = slot_ids(&twins);
         assert_ne!(twin_ids[0], twin_ids[1]);
+        // An app that relaunches keeps its ids: they go by its bundle
+        // identifier, not its process.
+        let of_app = |pid| AgentSlot {
+            app: Some("local.test.Dummies".into()),
+            ..slot(10.0, 20.0, pid, "D1", None)
+        };
+        assert_eq!(slot_ids(&[of_app(100)]), slot_ids(&[of_app(200)]));
+        assert_ne!(
+            slot_ids(&[slot(10.0, 20.0, 100, "D1", None)]),
+            slot_ids(&[slot(10.0, 20.0, 200, "D1", None)])
+        );
     }
 
     #[test]
@@ -817,6 +852,7 @@ mod tests {
         bar.push(AgentSlot {
             frame: Rect::new(766.0, 1.0, 18.0, 27.0),
             pid: Some(419),
+            app: None,
             name: None,
             identifier: None,
             overflow_control: true,
@@ -826,6 +862,13 @@ mod tests {
         bar.push(slot(740.0, 44.0, 2179, "D18", None));
         let layout = agent_layout(&bar, 3084, &vm_ours()).unwrap();
         assert_eq!(layout.folded, 2);
+        assert_eq!(
+            layout.folded_ids,
+            slot_ids(&[
+                slot(740.0, 44.0, 2179, "D17", None),
+                slot(740.0, 44.0, 2179, "D18", None)
+            ])
+        );
         assert!(
             layout
                 .chains

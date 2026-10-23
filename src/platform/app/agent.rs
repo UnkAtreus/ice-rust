@@ -113,6 +113,15 @@ impl Controller {
         icon
     }
 
+    /// Whether MenuBarAgent has laid the items out since our last length
+    /// change, so a read shows where they are.
+    pub(super) fn agent_settled(&self) -> bool {
+        self.agent
+            .changed
+            .get()
+            .is_none_or(|at| at.elapsed() >= LAYOUT_SETTLE)
+    }
+
     /// `set_menu_bar_state` on macOS 27: the lengths that hide or show
     /// `state`, or everything shown when our order would hide the icon.
     /// Returns the state applied.

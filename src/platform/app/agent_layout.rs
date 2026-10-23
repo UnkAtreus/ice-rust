@@ -76,7 +76,7 @@ impl Controller {
     /// The display with our icon and its menu bar height. MenuBarAgent's
     /// slot for the icon decides first: it is where the items this page
     /// reads are, and AppKit's frame can miss the display (issue #4).
-    fn agent_display(&self) -> Option<(Rect, f64)> {
+    pub(super) fn agent_display(&self) -> Option<(Rect, f64)> {
         let on_screen = windows::list_on_screen();
         let displays = windows::displays();
         let place = self
@@ -88,9 +88,13 @@ impl Controller {
         Some((place.display.bounds, place.menu_bar_height))
     }
 
+    /// Reads MenuBarAgent's bar on our icon's display; the macOS 27 Ice
+    /// Bar and search learn the sections from every read (v1.12).
     pub(super) fn read_agent_bar(&self) -> Option<AgentLayout> {
         let (display, _) = self.agent_display()?;
-        layout_pane::read_agent(&self.our_frames(), &display).ok()
+        let layout = layout_pane::read_agent(&self.our_frames(), &display).ok()?;
+        self.note_agent_read(&layout);
+        Some(layout)
     }
 
     /// Shows every section for Menu Bar Layout. Returns true when items

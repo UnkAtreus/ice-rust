@@ -77,17 +77,20 @@ fn set_look(button: &NSStatusBarButton, symbol_name: Option<&str>, fallback_titl
 
 /// Expanded to `length` (10000 pt before macOS 27, pushing items left of
 /// it off screen), or collapsed with `None`: variable length with a
-/// chevron (M1).
+/// chevron (M1), or with `chevron` false with nothing in it, which macOS
+/// lays out as a 16 pt blank (v1.12). The item stays in the menu bar either
+/// way, since the sections are found from it: at length 0 its window on
+/// macOS 26.7.1 is 0 x 0 and the walk loses it.
 fn set_divider(
     mtm: MainThreadMarker,
     item: &NSStatusItem,
     length: Option<f64>,
-    symbol_name: &str,
-    fallback: &str,
+    (symbol_name, fallback): (&str, &str),
+    chevron: bool,
 ) {
     item.setLength(length.unwrap_or(VARIABLE_LENGTH));
     if let Some(button) = item.button(mtm) {
-        if length.is_some() {
+        if length.is_some() || !chevron {
             button.setImage(None);
             button.setTitle(&NSString::new());
         } else {
@@ -95,6 +98,10 @@ fn set_divider(
         }
     }
 }
+
+/// The lengths `StatusItems::set_lengths` last set: hidden divider,
+/// spacers, always-hidden divider.
+type Lengths = (Option<f64>, [Option<f64>; 2], Option<f64>);
 
 pub struct StatusItems {
     mtm: MainThreadMarker,
@@ -105,6 +112,9 @@ pub struct StatusItems {
     /// so the two together can fill more than half the display (v1.8).
     spacers: [Option<Retained<NSStatusItem>>; 2],
     state: Cell<MenuBarState>,
+    lengths: Cell<Lengths>,
+    /// Collapsed dividers show a chevron (Show section dividers, v1.12).
+    show_dividers: Cell<bool>,
     /// The icon's images for the chosen style (v1.4); `None` shows a
     /// symbol or "...".
     icon_images: RefCell<Option<IconImages>>,
@@ -228,6 +238,8 @@ impl StatusItems {
             always_hidden,
             spacers,
             state: Cell::new(MenuBarState::AllShown),
+            lengths: Cell::new((None, [None, None], None)),
+            show_dividers: Cell::new(true),
             icon_images: RefCell::new(icon_images),
             icon_active: Cell::new(true),
         };
@@ -339,7 +351,14 @@ impl StatusItems {
         spacers: [Option<f64>; 2],
         always_hidden: Option<f64>,
     ) {
-        set_divider(self.mtm, &self.hidden, hidden, "chevron.left", "<");
+        let chevron = self.show_dividers.get();
+        set_divider(
+            self.mtm,
+            &self.hidden,
+            hidden,
+            ("chevron.left", "<"),
+            chevron,
+        );
         for (item, length) in self.spacers.iter().zip(spacers) {
             if let (Some(item), Some(length)) = (item, length) {
                 item.setLength(length);
@@ -349,10 +368,19 @@ impl StatusItems {
             self.mtm,
             &self.always_hidden,
             always_hidden,
-            "chevron.left.2",
-            "<<",
+            ("chevron.left.2", "<<"),
+            chevron,
         );
+        self.lengths.set((hidden, spacers, always_hidden));
         self.state.set(state);
+    }
+
+    /// Shows or hides the chevrons of collapsed dividers.
+    pub fn set_show_dividers(&self, show: bool) {
+        if self.show_dividers.replace(show) != show {
+            let (hidden, spacers, always_hidden) = self.lengths.get();
+            self.set_lengths(self.state.get(), hidden, spacers, always_hidden);
+        }
     }
 
     /// The shown image while a section is revealed or the Ice Bar is

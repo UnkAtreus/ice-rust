@@ -158,6 +158,14 @@ pub fn extras_item_frames(pid: i32) -> Vec<Rect> {
         .collect()
 }
 
+/// How many status items the app `pid` has, folded ones included: its
+/// extras menu bar lists them all on macOS 27 (v1.12). `None` without an
+/// answer.
+pub fn extras_item_count(pid: i32) -> Option<usize> {
+    let bar = application(pid).and_then(|app| attribute(&app, "AXExtrasMenuBar"))?;
+    Some(children(&bar).len())
+}
+
 /// The slots of each MenuBarAgent menu bar window, one list per window in
 /// MenuBarAgent's order. `None` without MenuBarAgent or Accessibility.
 pub fn agent_windows() -> Option<Vec<Vec<AgentSlot>>> {
@@ -189,15 +197,24 @@ fn window_slots(window: &CFType) -> Vec<AgentSlot> {
             } else {
                 children(slot).into_iter().next()
             };
+            let pid = item.as_ref().and_then(|i| pid_of(i));
             Some(AgentSlot {
                 frame,
-                pid: item.as_ref().and_then(|i| pid_of(i)),
+                pid,
+                app: pid.and_then(bundle_id),
                 name: item.as_ref().and_then(|i| item_name(i)),
                 identifier: item.as_ref().and_then(|i| identifier(i, 2)),
                 overflow_control,
             })
         })
         .collect()
+}
+
+/// The bundle identifier of the app `pid`.
+fn bundle_id(pid: i32) -> Option<String> {
+    NSRunningApplication::runningApplicationWithProcessIdentifier(pid)?
+        .bundleIdentifier()
+        .map(|id| id.to_string())
 }
 
 /// Every slot of MenuBarAgent's menu bar window on `bar`, the system

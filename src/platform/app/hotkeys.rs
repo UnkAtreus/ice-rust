@@ -82,10 +82,12 @@ impl Controller {
             HotkeyAction::ToggleHiddenSection => self.toggle(Section::Hidden),
             HotkeyAction::ToggleAlwaysHiddenSection => self.toggle(Section::AlwaysHidden),
             HotkeyAction::SearchMenuBarItems => self.toggle_search(),
-            HotkeyAction::EnableIceBar if self.agent_menu_bar => {
-                eprintln!("ice-rust: the Ice Bar is not available on macOS 27 yet");
-            }
             HotkeyAction::EnableIceBar => self.toggle_ice_bar_mode(),
+            HotkeyAction::ShowSectionDividers => {
+                self.flip_setting(|s| s.show_section_dividers = !s.show_section_dividers);
+            }
+            HotkeyAction::ToggleApplicationMenus => self.toggle_app_menus(),
+            HotkeyAction::EnableAutoRehide => self.flip_setting(|s| s.auto_rehide = !s.auto_rehide),
         }
     }
 }

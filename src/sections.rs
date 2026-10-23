@@ -18,6 +18,15 @@ impl Section {
     /// Top to bottom in the settings pane.
     pub const ALL: [Section; 3] = [Section::Visible, Section::Hidden, Section::AlwaysHidden];
 
+    /// The position in `ALL`.
+    pub fn index(self) -> usize {
+        match self {
+            Section::Visible => 0,
+            Section::Hidden => 1,
+            Section::AlwaysHidden => 2,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Section::Visible => "Visible Section",

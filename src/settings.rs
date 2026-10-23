@@ -25,6 +25,8 @@ pub const KEY_SHOW_ON_SCROLL: &str = "ShowOnScroll";
 pub const KEY_HIDE_APP_MENUS: &str = "HideApplicationMenus";
 /// Global hotkeys as JSON, `{action: [keyCode, modifiers]}` (v1.9).
 pub const KEY_HOTKEYS: &str = "Hotkeys";
+/// Ice's key for showing a shown section's divider (v1.12).
+pub const KEY_SHOW_SECTION_DIVIDERS: &str = "ShowSectionDividers";
 pub const KEY_TINT_CUSTOM_ICON: &str = "TintCustomIcon";
 /// The custom icon as PNG data at 3x (v1.4). Not part of `Settings`: it is
 /// written once when the user chooses an image.
@@ -56,6 +58,18 @@ pub fn seed_positions(os_major: u32) -> [Option<f64>; 3] {
 /// Defaults flag written once the v1.2 always-hidden placement migration
 /// has run (L1).
 pub const KEY_ALWAYS_HIDDEN_PLACEMENT: &str = "AlwaysHiddenPlacementV2";
+
+/// Defaults flag written once Use Ice Bar was switched off on macOS 27
+/// (v1.12). Before v1.12 the Ice Bar did not run there, while `UseIceBar`
+/// was saved on (its default) with every other change, so macOS 27 users
+/// keep the menu bar until they turn the Ice Bar on themselves.
+pub const KEY_ICE_BAR_MACOS_27: &str = "IceBarMacOS27V1";
+
+/// Whether launching on macOS `os_major` switches Use Ice Bar off once:
+/// on macOS 27 and later, until `KEY_ICE_BAR_MACOS_27` exists.
+pub fn ice_bar_off_once(os_major: u32, flag_present: bool) -> bool {
+    crate::agent_bar::uses_agent_menu_bar(os_major) && !flag_present
+}
 
 /// What the one-time always-hidden placement migration does at launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +116,9 @@ pub struct Settings {
     pub show_on_scroll: bool,
     /// Hide the frontmost app's menus while shown items reach them (v1.6).
     pub hide_app_menus: bool,
+    /// A shown section's divider shows a chevron; off, it is a blank
+    /// space (v1.12).
+    pub show_section_dividers: bool,
     /// Global hotkeys; none by default, like Ice (v1.9).
     pub hotkeys: Hotkeys,
 }
@@ -123,6 +140,8 @@ impl Default for Settings {
             hover_delay: HOVER_DELAY,
             show_on_scroll: true,
             hide_app_menus: true,
+            // ice-rust has always drawn the chevrons; Ice's default is off.
+            show_section_dividers: true,
             hotkeys: Hotkeys::default(),
         }
     }
@@ -169,6 +188,8 @@ impl Settings {
                 .unwrap_or(defaults.hover_delay),
             show_on_scroll: get_bool(KEY_SHOW_ON_SCROLL).unwrap_or(defaults.show_on_scroll),
             hide_app_menus: get_bool(KEY_HIDE_APP_MENUS).unwrap_or(defaults.hide_app_menus),
+            show_section_dividers: get_bool(KEY_SHOW_SECTION_DIVIDERS)
+                .unwrap_or(defaults.show_section_dividers),
             hotkeys: get_string(KEY_HOTKEYS)
                 .map(|text| Hotkeys::decode(&text))
                 .unwrap_or(defaults.hotkeys),
@@ -288,8 +309,8 @@ mod store {
     use super::{
         KEY_AUTO_CHECK_UPDATES, KEY_AUTO_REHIDE, KEY_HIDE_APP_MENUS, KEY_HOTKEYS, KEY_ICON_STYLE,
         KEY_REHIDE_INTERVAL, KEY_REHIDE_STRATEGY, KEY_SHOW_ON_CLICK, KEY_SHOW_ON_HOVER,
-        KEY_SHOW_ON_HOVER_DELAY, KEY_SHOW_ON_SCROLL, KEY_TINT_CUSTOM_ICON, KEY_USE_ICE_BAR,
-        SeedValue, Settings,
+        KEY_SHOW_ON_HOVER_DELAY, KEY_SHOW_ON_SCROLL, KEY_SHOW_SECTION_DIVIDERS,
+        KEY_TINT_CUSTOM_ICON, KEY_USE_ICE_BAR, SeedValue, Settings,
     };
 
     fn has_key(defaults: &NSUserDefaults, key: &str) -> bool {
@@ -337,6 +358,7 @@ mod store {
             (KEY_SHOW_ON_HOVER, settings.show_on_hover),
             (KEY_SHOW_ON_SCROLL, settings.show_on_scroll),
             (KEY_HIDE_APP_MENUS, settings.hide_app_menus),
+            (KEY_SHOW_SECTION_DIVIDERS, settings.show_section_dividers),
         ] {
             defaults.setBool_forKey(on, &NSString::from_str(key));
         }
@@ -526,6 +548,23 @@ mod tests {
         assert!(s.show_on_hover);
         assert!(!s.show_on_scroll);
         assert_eq!(s.hover_delay, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn the_ice_bar_starts_off_once_on_macos_27() {
+        assert_eq!(KEY_ICE_BAR_MACOS_27, "IceBarMacOS27V1");
+        assert!(ice_bar_off_once(27, false));
+        assert!(!ice_bar_off_once(27, true));
+        assert!(!ice_bar_off_once(26, false));
+    }
+
+    #[test]
+    fn section_dividers_show_unless_turned_off() {
+        assert_eq!(KEY_SHOW_SECTION_DIVIDERS, "ShowSectionDividers");
+        assert!(Settings::default().show_section_dividers);
+        let off: HashMap<&str, bool> = [(KEY_SHOW_SECTION_DIVIDERS, false)].into();
+        let s = Settings::from_lookup(|k| off.get(k).copied(), |_| None, |_| None);
+        assert!(!s.show_section_dividers);
     }
 
     #[test]

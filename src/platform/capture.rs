@@ -16,8 +16,9 @@ use objc2::AnyThread;
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep};
 use objc2_core_foundation::{CFArray, CFIndex, CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
-    CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo,
-    CGImageByteOrderInfo, CGRectNull, CGWindowImageOption, CGWindowListOption,
+    CGBitmapContextCreate, CGBitmapContextCreateImage, CGBitmapContextGetData, CGColorSpace,
+    CGContext, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo, CGRectNull, CGWindowImageOption,
+    CGWindowListOption,
 };
 #[allow(deprecated)]
 use objc2_core_graphics::{CGWindowListCreateImage, CGWindowListCreateImageFromArray};
@@ -25,6 +26,7 @@ use objc2_foundation::NSDictionary;
 
 use super::windows::rect_to_cg;
 use crate::geometry::{composite_scale, crop_rect, menu_bar_window};
+use crate::glyph::{cut_background, glyph_is_light};
 use crate::image_check::{PixelLayout, average_color, is_fully_transparent, light_glyphs};
 use crate::model::{
     CAPTURE_OPTION, CAPTURE_TIMEOUT, COLOR_CAPTURE_OPTION, Rect, WALLPAPER_OWNER,
@@ -239,6 +241,82 @@ pub fn capture_slots_bounded(
         }
         out
     })
+}
+
+/// macOS 27 item glyphs (v1.12): each rect of `rects` (CG space) cropped
+/// from one capture of the screen over `region`, bounded like
+/// `capture_slots_bounded`, with the menu bar behind it cut away
+/// (`crate::glyph`). The glyph tone is decided over all of them. Also
+/// returns that tone, `None` when no crop showed a glyph. Each capture of
+/// the screen shows macOS's purple capture dot in the menu bar for about
+/// 10 s (macOS 27.0.1), so callers capture only what they lack.
+#[allow(clippy::type_complexity)]
+pub fn capture_glyphs_bounded(
+    region: Rect,
+    rects: Vec<Rect>,
+) -> Result<(Vec<Option<CFRetained<CGImage>>>, Option<bool>), BoundedError> {
+    let shots = capture_slots_bounded(vec![SlotSource::Screen], region, rects)?;
+    let buffers: Vec<Option<(Vec<u8>, usize, usize)>> = shots
+        .iter()
+        .map(|shot| {
+            let image = shot.as_deref()?;
+            let (w, h) = (CGImage::width(Some(image)), CGImage::height(Some(image)));
+            rgba_pixels(image, w, h).map(|buffer| (buffer, w, h))
+        })
+        .collect();
+    let (mut light, mut dark) = (0, 0);
+    for (buffer, w, h) in buffers.iter().flatten() {
+        match glyph_is_light(buffer, *w, *h) {
+            Some(true) => light += 1,
+            Some(false) => dark += 1,
+            None => {}
+        }
+    }
+    let tone = (light + dark > 0).then_some(light >= dark);
+    let glyphs = buffers
+        .into_iter()
+        .map(|buffer| {
+            let (buffer, w, h) = buffer?;
+            image_from_rgba(&cut_background(&buffer, w, h, tone?), w, h)
+        })
+        .collect();
+    Ok((glyphs, tone))
+}
+
+/// An image of premultiplied RGBA pixels, `width` x `height`.
+fn image_from_rgba(rgba: &[u8], width: usize, height: usize) -> Option<CFRetained<CGImage>> {
+    let layout = PixelLayout::rgba8(width, height);
+    if rgba.len() < layout.bytes_per_row * height {
+        return None;
+    }
+    let space = CGColorSpace::new_device_rgb();
+    let info = CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0;
+    // SAFETY: a null data pointer lets the context allocate its own buffer
+    // for the 8-bit, 4-byte RGBA format the arguments describe.
+    let context = unsafe {
+        CGBitmapContextCreate(
+            ptr::null_mut(),
+            width,
+            height,
+            8,
+            layout.bytes_per_row,
+            space.as_deref(),
+            info,
+        )
+    }?;
+    let data = CGBitmapContextGetData(Some(&context)).cast::<u8>();
+    if data.is_null() {
+        return None;
+    }
+    for y in 0..height {
+        let row = &rgba[y * width * 4..(y + 1) * width * 4];
+        // SAFETY: the context's buffer has `bytes_per_row` bytes per row for
+        // `height` rows, and each row copies `width * 4` of them.
+        unsafe {
+            ptr::copy_nonoverlapping(row.as_ptr(), data.add(y * layout.bytes_per_row), width * 4);
+        }
+    }
+    CGBitmapContextCreateImage(Some(&context))
 }
 
 /// Crops a sub-rectangle given in image pixels (origin top left).

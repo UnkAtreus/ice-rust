@@ -30,7 +30,6 @@ use super::login_item;
 use super::menu_icon::{self, CustomIcon};
 use super::mover::{MoveCallback, MoveError, MoveRequest};
 use super::permissions;
-use super::status;
 use super::timer;
 use super::ui::{
     ActionTarget, BoxStyle, FlippedView, Follow, RoundedBox, Weight, WindowDelegate, add, follow,
@@ -280,6 +279,7 @@ struct GeneralParts {
     icon_style: Retained<NSPopUpButton>,
     custom_note: Retained<NSTextField>,
     custom_tint: Retained<NSButton>,
+    show_dividers: Retained<NSSwitch>,
     use_bar: Retained<NSSwitch>,
     hide_app_menus: Retained<NSSwitch>,
     show_on_click: Retained<NSSwitch>,
@@ -353,17 +353,9 @@ pub struct SettingsWindow {
     settle: RefCell<Option<Retained<NSTimer>>>,
 }
 
-/// Subtitle of a setting that the macOS 27 menu bar does not support yet.
-pub(super) const NOT_ON_MACOS_27: &str = "Not available on macOS 27 yet";
-
-/// Whether MenuBarAgent draws the menu bar (macOS 27, v1.8).
-pub(super) fn agent_menu_bar() -> bool {
-    crate::agent_bar::uses_agent_menu_bar(status::os_major())
-}
-
-/// Hide app menus works with Use Ice Bar off, and not on macOS 27 yet.
+/// Hide app menus works with Use Ice Bar off.
 fn app_menus_switch_enabled(use_ice_bar: bool) -> bool {
-    !use_ice_bar && !agent_menu_bar()
+    !use_ice_bar
 }
 
 fn switch_state(on: bool) -> isize {
@@ -621,6 +613,12 @@ impl SettingsWindow {
         self.window.orderFrontRegardless();
     }
 
+    /// Shows settings changed elsewhere (a hotkey) on the General and
+    /// Hidden Items pages.
+    pub fn show_settings(&self) {
+        self.sync_general();
+    }
+
     pub fn is_visible(&self) -> bool {
         self.window.isVisible()
     }
@@ -687,13 +685,13 @@ impl SettingsWindow {
 
     fn sync_general(&self) {
         let s = self.host.settings();
-        let agent = agent_menu_bar();
-        self.general
-            .use_bar
-            .setState(switch_state(s.use_ice_bar && !agent));
+        self.general.use_bar.setState(switch_state(s.use_ice_bar));
         self.general
             .auto_rehide
             .setState(switch_state(s.auto_rehide));
+        self.general
+            .show_dividers
+            .setState(switch_state(s.show_section_dividers));
         let index = RehideStrategy::ALL
             .iter()
             .position(|&strategy| strategy == s.rehide_strategy)
@@ -707,7 +705,7 @@ impl SettingsWindow {
         self.layout_rehide(s.rehide());
         self.general
             .hide_app_menus
-            .setState(switch_state(s.hide_app_menus && !agent));
+            .setState(switch_state(s.hide_app_menus));
         self.general
             .hide_app_menus
             .setEnabled(app_menus_switch_enabled(s.use_ice_bar));
@@ -919,12 +917,8 @@ impl SettingsWindow {
     /// hover delay slider covers every accepted value.
     fn general_changed(&self, slider_moved: bool) {
         let mut s = self.host.settings();
-        // On macOS 27 both switches show off and stay disabled; the stored
-        // choices apply again on an earlier macOS.
-        if !agent_menu_bar() {
-            s.use_ice_bar = self.general.use_bar.state() == NSControlStateValueOn;
-            s.hide_app_menus = self.general.hide_app_menus.state() == NSControlStateValueOn;
-        }
+        s.use_ice_bar = self.general.use_bar.state() == NSControlStateValueOn;
+        s.hide_app_menus = self.general.hide_app_menus.state() == NSControlStateValueOn;
         self.general
             .hide_app_menus
             .setEnabled(app_menus_switch_enabled(s.use_ice_bar));
@@ -938,6 +932,7 @@ impl SettingsWindow {
             .setStringValue(&NSString::from_str(&tenths_text(delay)));
         self.general.hover_delay.setEnabled(s.show_on_hover);
         s.auto_rehide = self.general.auto_rehide.state() == NSControlStateValueOn;
+        s.show_section_dividers = self.general.show_dividers.state() == NSControlStateValueOn;
         s.rehide_strategy = self.selected_strategy();
         s.auto_check_updates = self.general.auto_updates.state() == NSControlStateValueOn;
         s.icon_style = self.selected_style();
@@ -1402,8 +1397,24 @@ fn build_general(
     let (icon_style, custom_note, custom_tint) =
         build_icon_group(mtm, general_page, width, ROW, settings, me, targets);
 
-    // General: launch at login and updates (v1.3).
+    // General: the dividers' chevrons (v1.12).
     let top = 8.0 + 2.0 * ROW + 16.0;
+    let dividers_group = RoundedBox::new(mtm, rect(MARGIN, top, width, ROW), BoxStyle::Group);
+    add(general_page, &dividers_group, Follow::Width);
+    let show_dividers = switch_row(
+        mtm,
+        &dividers_group,
+        (
+            "Show section dividers",
+            "Show a chevron where a shown section starts; off, a blank space",
+        ),
+        0.0,
+        width,
+        settings.show_section_dividers,
+    );
+
+    // General: launch at login and updates (v1.3).
+    let top = top + ROW + 16.0;
     let system = RoundedBox::new(mtm, rect(MARGIN, top, width, 2.0 * ROW), BoxStyle::Group);
     add(general_page, &system, Follow::Width);
     add(
@@ -1454,9 +1465,7 @@ fn build_general(
         settings.auto_check_updates,
     );
 
-    // Hidden Items: how hidden items show (v1.5, v1.6). Neither the Ice
-    // Bar nor hiding app menus works on the macOS 27 menu bar yet (v1.8).
-    let agent = agent_menu_bar();
+    // Hidden Items: how hidden items show (v1.5, v1.6).
     let show = RoundedBox::new(mtm, rect(MARGIN, 8.0, width, 6.0 * ROW), BoxStyle::Group);
     add(hidden_page, &show, Follow::Width);
     let use_bar = switch_row(
@@ -1464,32 +1473,23 @@ fn build_general(
         &show,
         (
             "Use Ice Bar",
-            if agent {
-                NOT_ON_MACOS_27
-            } else {
-                "Show hidden items in a bar below the menu bar"
-            },
+            "Show hidden items in a bar below the menu bar",
         ),
         0.0,
         width,
-        settings.use_ice_bar && !agent,
+        settings.use_ice_bar,
     );
-    use_bar.setEnabled(!agent);
     separator(mtm, &show, ROW, width);
     let hide_app_menus = switch_row(
         mtm,
         &show,
         (
             "Hide app menus",
-            if agent {
-                NOT_ON_MACOS_27
-            } else {
-                "Hide the app's menus while shown items need the room (Use Ice Bar off)"
-            },
+            "Hide the app's menus while shown items need the room (Use Ice Bar off)",
         ),
         ROW,
         width,
-        settings.hide_app_menus && !agent,
+        settings.hide_app_menus,
     );
     hide_app_menus.setEnabled(app_menus_switch_enabled(settings.use_ice_bar));
     separator(mtm, &show, 2.0 * ROW, width);
@@ -1602,7 +1602,8 @@ fn build_general(
         &seconds_text(seconds),
     );
 
-    let controls: [(&NSControl, bool); 11] = [
+    let controls: [(&NSControl, bool); 12] = [
+        (&show_dividers, false),
         (&use_bar, false),
         (&hide_app_menus, false),
         (&show_on_click, false),
@@ -1648,6 +1649,7 @@ fn build_general(
         icon_style,
         custom_note,
         custom_tint,
+        show_dividers,
         use_bar,
         hide_app_menus,
         show_on_click,

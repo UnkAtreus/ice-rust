@@ -16,9 +16,7 @@ use objc2_app_kit::{NSButton, NSColor, NSEvent, NSEventMask, NSEventModifierFlag
 use objc2_foundation::NSString;
 
 use super::hotkeys::{self as carbon, Suspend};
-use super::settings_window::{
-    MARGIN, NOT_ON_MACOS_27, SettingsHost, agent_menu_bar, row_text, separator,
-};
+use super::settings_window::{MARGIN, SettingsHost, row_text, separator};
 use super::status;
 use super::ui::{
     ActionTarget, BoxStyle, Follow, RoundedBox, Weight, add, label, rect, symbol, wrapping_label,
@@ -85,7 +83,6 @@ impl HotkeysPane {
                 BoxStyle::Group,
             );
             add(page, &group, Follow::Width);
-            let agent = agent_menu_bar();
             let mut rows = Vec::new();
             let mut targets = Vec::new();
             for (i, action) in actions.into_iter().enumerate() {
@@ -93,22 +90,11 @@ impl HotkeysPane {
                 if i > 0 {
                     separator(mtm, &group, y, width);
                 }
-                // Both click items through their windows (v1.8).
-                let unavailable = agent
-                    && matches!(
-                        action,
-                        HotkeyAction::EnableIceBar | HotkeyAction::SearchMenuBarItems
-                    );
-                let detail = if unavailable {
-                    NOT_ON_MACOS_27
-                } else {
-                    action.detail()
-                };
                 row_text(
                     mtm,
                     &group,
                     action.title(),
-                    detail,
+                    action.detail(),
                     16.0,
                     y + 11.0,
                     width - FIELD_WIDTH - 80.0,
@@ -128,7 +114,6 @@ impl HotkeysPane {
                     FIELD_WIDTH,
                     30.0,
                 ));
-                field.setEnabled(!unavailable);
                 add(&group, &field, Follow::Right);
                 // SAFETY: as above.
                 let clear = unsafe {

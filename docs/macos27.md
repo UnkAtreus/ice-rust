@@ -4,8 +4,9 @@ Working notes for issue #2 ("Does not work under macOS 27.0.1"). macOS 27
 removed the mechanism every menu bar manager relied on, ice-rust and Ice
 included. Apple published no documentation or API for the change; the
 findings below come from other projects' measurements and from our own
-macOS 27.0.1 VM. Status: approach A implemented in v1.8 (see Design) and
-tested in the VM; not yet on a real Mac.
+macOS 27.0.1 VM. Status: approach A implemented in v1.8 (see Design), the
+Ice Bar, search and Hide app menus in v1.12, all tested in the VM; on a
+real Mac, the reporter of issue #4 ran 0.2.5 on macOS 27.2.
 
 ## What changed
 
@@ -153,6 +154,37 @@ showing items means shrinking the spacers.
 
 **Showing.** Setting both spacers back to 20 returns every item to the bar
 and removes the overflow control.
+
+### Experiments for the Ice Bar (VM, 2026-10-23)
+
+A test app with seven status items, each with a symbol and a menu that logs
+when it opens; positions seeded so five land in the hidden section and two
+in the always-hidden one. The display was 1454 pt wide by then.
+
+- **Folded items in their app's tree.** Each app's `AXExtrasMenuBar` lists
+  all its status items, folded ones too, each with `AXPress`. Folded items
+  have frames off every display (x -1, y 912), the same for all of them.
+  MenuBarAgent's own tree left them out entirely while everything was
+  hidden, and showed no overflow control then.
+- **AXPress on a folded item** opened its menu at the top left corner of
+  the screen (x -5, y 31), from its folded frame, and returned
+  kAXErrorCannotComplete after 1.5 s while the menu tracked.
+- **Captures.** A capture of the screen over the menu bar shows the
+  glyphs, over the bar's background. MenuBarAgent's menu bar window
+  captured as nothing, and the Window Server "Menubar" window as a fully
+  transparent image. Each capture of the screen made macOS show a purple
+  dot right of the clock for about 10 s (11:23:37 to 11:23:46).
+- **Shown section.** With the hidden section shown, the five items were on
+  the bar right of the overflow control, and the always-hidden divider was
+  a folded slot left of it. With four wide items added, two of them were
+  on the bar and one folded item was listed; the fourth was not in the
+  tree.
+- **Modifiers.** A click on our icon reaches the app through MenuBarAgent
+  without the modifier keys: with Option held for real (a key-down
+  event), `currentEvent.modifierFlags` had no Option.
+- **Launches.** Apps without a Dock icon post no
+  `NSWorkspaceDidLaunchApplicationNotification`; the test app's launch
+  was not seen.
 
 ## Approaches other projects use
 
@@ -322,8 +354,9 @@ window-list backend unchanged.
 - **Menu Bar Layout:** the bars from MenuBarAgent's slots, split by our
   dividers; every section stays shown while the page is open (folded items
   have no position), moves are single Command-drags read back afterwards.
-- **Not yet on macOS 27:** the Ice Bar (items show in the menu bar
-  instead) and Hide app menus.
+- **Ice Bar, search and Hide app menus** from v1.12, from the items as
+  last seen (see "Experiments for the Ice Bar" above and
+  [technical.md](technical.md#the-macos-27-ice-bar-and-search-v112)).
 - **Limits:** a divider and its spacer together cover almost a whole
   display, but the cap follows the narrowest display, so on a wider one the
   leftmost items of a section can stay on the bar; a spacer that is folded

@@ -2,6 +2,7 @@
 //! Pure modules carry the logic and tests; `platform` holds the macOS glue.
 
 pub mod agent_bar;
+pub mod agent_catalog;
 pub mod app_menus;
 pub mod arrange;
 pub mod bar_layout;
@@ -10,6 +11,7 @@ pub mod base64;
 pub mod brand;
 pub mod chain;
 pub mod geometry;
+pub mod glyph;
 pub mod hotkeys;
 pub mod image_check;
 pub mod input_tag;

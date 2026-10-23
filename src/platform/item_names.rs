@@ -63,12 +63,12 @@ fn owner(app: &NSRunningApplication) -> Option<Owner> {
 }
 
 /// macOS 27: notes the owners of the items by the processes MenuBarAgent
-/// reports for them. An item id there stands for one process
-/// (`agent_bar::slot_ids`), so an owner once found stays. Main thread
-/// only.
+/// reports for them. An item id there stands for one app
+/// (`agent_bar::slot_ids`), so an owner once found stays until the app
+/// runs as another process. Main thread only.
 pub fn note_owners(owners: &[(WindowId, i32)]) {
     for &(id, pid) in owners {
-        if book().owner(id).is_some() {
+        if book().owner(id).is_some_and(|owner| owner.pid == pid) {
             continue;
         }
         let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) else {

@@ -64,12 +64,14 @@ use crate::sections::{MenuBarState, Section};
 use crate::settings::{self, KEY_CUSTOM_ICON_IMAGE, Settings};
 
 mod agent;
+mod agent_items;
 mod agent_layout;
 mod app_menus;
 mod hotkeys;
 mod rehide_policy;
 mod triggers;
 use agent::Agent;
+use agent_items::AgentItems;
 use agent_layout::AgentArrange;
 use app_menus::AppMenus;
 use hotkeys::HotkeyState;
@@ -316,6 +318,8 @@ struct Controller {
     agent: Agent,
     /// Menu Bar Layout on macOS 27.
     agent_arrange: AgentArrange,
+    /// The Ice Bar and search on macOS 27 (v1.12).
+    agent_items: AgentItems,
     /// Global hotkeys (v1.9).
     hotkeys: HotkeyState,
     settle_timer: RefCell<Option<Retained<NSTimer>>>,
@@ -393,7 +397,15 @@ fn main_menu(mtm: MainThreadMarker, target: &Target) -> Retained<NSMenu> {
 
 impl Controller {
     fn new(mtm: MainThreadMarker, target: &Target) -> Rc<Self> {
-        let settings = settings::load();
+        let mut settings = settings::load();
+        if settings::ice_bar_off_once(
+            status::os_major(),
+            settings::key_exists(settings::KEY_ICE_BAR_MACOS_27),
+        ) {
+            settings.use_ice_bar = false;
+            settings::save(&settings);
+            settings::write_flag(settings::KEY_ICE_BAR_MACOS_27);
+        }
         let rehide = Rehide::new(settings.rehide_interval, Instant::now());
         // SAFETY: `target` lives for the whole app run and implements
         // iconClicked: with the required signature.
@@ -405,6 +417,7 @@ impl Controller {
                 menu_icon::icon_images(settings.icon_style, settings.tint_custom_icon),
             )
         };
+        status.set_show_dividers(settings.show_section_dividers);
 
         let menu = NSMenu::new(mtm);
         let toggle_item = menu_item(
@@ -423,8 +436,6 @@ impl Controller {
         );
         let use_bar_item = menu_item(mtm, "Use Ice Bar", sel!(toggleIceBar:), "", Some(target));
         let agent_menu_bar = agent_bar::uses_agent_menu_bar(status::os_major());
-        // The Ice Bar needs item windows to capture (v1.8).
-        use_bar_item.setHidden(agent_menu_bar);
         let search_item = menu_item(
             mtm,
             "Search Menu Bar Items...",
@@ -432,8 +443,6 @@ impl Controller {
             "",
             Some(target),
         );
-        // Search clicks items through their windows, like the Ice Bar.
-        search_item.setHidden(agent_menu_bar);
         menu.addItem(&toggle_item);
         menu.addItem(&always_item);
         menu.addItem(&use_bar_item);
@@ -515,6 +524,7 @@ impl Controller {
                 agent_menu_bar,
                 agent: Agent::default(),
                 agent_arrange: AgentArrange::default(),
+                agent_items: AgentItems::default(),
                 hotkeys: HotkeyState::default(),
                 settle_timer: RefCell::new(None),
                 tick_timer: RefCell::new(None),
@@ -647,9 +657,12 @@ impl Controller {
 
     fn icon_clicked(&self) {
         let event = NSApplication::sharedApplication(self.mtm).currentEvent();
+        // On macOS 27 the click reaches us through MenuBarAgent without the
+        // keys held (macOS 27.0.1), so the keys held now count too.
         let flags = event
             .as_ref()
-            .map_or(NSEventModifierFlags::empty(), |e| e.modifierFlags());
+            .map_or(NSEventModifierFlags::empty(), |e| e.modifierFlags())
+            | NSEvent::modifierFlags_class();
         let wants_menu = event
             .as_ref()
             .is_some_and(|e| e.r#type() == NSEventType::RightMouseUp)
@@ -670,10 +683,9 @@ impl Controller {
         }
     }
 
-    /// Whether sections open in the Ice Bar. It needs item windows, which
-    /// the macOS 27 menu bar does not have (v1.8).
+    /// Whether sections open in the Ice Bar; on macOS 27 too from v1.12.
     fn use_ice_bar(&self) -> bool {
-        self.settings.borrow().use_ice_bar && !self.agent_menu_bar
+        self.settings.borrow().use_ice_bar
     }
 
     fn show_menu(&self) {
@@ -735,26 +747,38 @@ impl Controller {
     }
 
     /// Opens the search panel (v1.11), or closes it when it is open. It
-    /// lists what Menu Bar Layout shows and clicks items like the Ice Bar,
-    /// through their windows, which the macOS 27 menu bar does not have.
+    /// lists what Menu Bar Layout shows, on macOS 27 the items as last seen
+    /// (v1.12), and clicks items like the Ice Bar.
     fn toggle_search(&self) {
-        if self.agent_menu_bar {
-            eprintln!("ice-rust: search is not available on macOS 27 yet");
-            return;
-        }
         if self.search.is_visible() {
             self.search.close();
             return;
         }
         self.close_bar();
+        if self.agent_menu_bar {
+            self.agent_open_search();
+            return;
+        }
         let snapshot = self.load_layout();
         self.search.show(&snapshot);
     }
 
     fn toggle_ice_bar_mode(&self) {
+        self.flip_setting(|s| s.use_ice_bar = !s.use_ice_bar);
+    }
+
+    /// Changes a setting for a hotkey, saves and applies it, and shows it
+    /// in Settings when that is open.
+    pub(super) fn flip_setting(&self, change: impl FnOnce(&mut Settings)) {
         let mut next = self.settings.borrow().clone();
-        next.use_ice_bar = !next.use_ice_bar;
+        change(&mut next);
         self.apply_settings(&next);
+        let window = self.settings_window.borrow().clone();
+        if let Some(window) = window
+            && window.is_visible()
+        {
+            window.show_settings();
+        }
     }
 
     /// Saves new settings and applies them live.
@@ -781,6 +805,9 @@ impl Controller {
             || previous.tint_custom_icon != next.tint_custom_icon
         {
             self.refresh_icon();
+        }
+        if previous.show_section_dividers != next.show_section_dividers {
+            self.status.set_show_dividers(next.show_section_dividers);
         }
         if (
             previous.show_on_click,
@@ -1087,6 +1114,10 @@ impl Controller {
     }
 
     fn open_bar(&self, section: Section) {
+        if self.agent_menu_bar {
+            self.agent_open_bar(section);
+            return;
+        }
         self.search.close();
         let all = windows::list_windows();
         let (divider, items) = self.section_items(&all, section);
@@ -1230,6 +1261,10 @@ impl Controller {
     /// click restores the cursor per G4. A move in progress owns the mouse,
     /// so the click waits for it to end, and the wait starts over then.
     fn click_through(&self, id: WindowId, section: Section) {
+        if self.agent_menu_bar {
+            self.agent_click_through(id, section);
+            return;
+        }
         // close_bar releases hover: the revealed section stays when the
         // pointer leaves the menu bar.
         self.close_bar();

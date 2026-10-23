@@ -1336,3 +1336,61 @@ so the content view was drawn offscreen instead: icons, names, the
 selection and the hidden items' images on the bar fill drew as designed.
 The Hotkeys page, rendered with `render-settings`, shows the new row.
 
+## v1.12: the last hotkeys, and the Ice Bar, search and Hide app menus on macOS 27 (2026-10-23)
+
+Maintainer request after 0.2.6: the hotkeys Ice has that ice-rust lacked,
+and the three features that were off on macOS 27, then 1.0.
+
+Hotkeys. Ice's `HotkeyAction.swift` has six actions; ice-rust had four.
+`ShowSectionDividers` toggles Ice's Advanced setting of that name, which
+shows a collapsed divider as a chevron or removes it (`isVisible`);
+`ToggleApplicationMenus` flips Ice's `hideApplicationMenus` and
+`showApplicationMenus` by hand. Ice's roadmap adds "Enable/disable auto
+rehide".
+
+| Decision | Why |
+|---|---|
+| A Show section dividers switch on the General page, on by default | ice-rust has always drawn the chevrons; a new default would change the bar for everyone. Ice's default is off. |
+| Off draws the divider blank at variable length instead of removing it | The sections are found from the divider's window on macOS 26 and from its slot on macOS 27. Measured on macOS 26.7.1: a blank item at variable length gets a 16 x 30 window; at length 0, a 0 x 0 window the walk cannot use. |
+| Toggle app menus reuses Hide app menus, with a flag that keeps the automatic check out | The same activation trick as Ice's; without the flag the next check would show the menus again as soon as no section is shown. |
+| Hotkeys that flip a setting go through `flip_setting`, which also refreshes an open Settings page | Before, the Use Ice Bar hotkey left its switch stale while Settings was open. |
+
+macOS 27. Findings in the VM (macOS 27.0.1, see [macos27.md](macos27.md)):
+each app's extras menu bar lists its folded items, with frames off every
+display; AXPress on a folded item opens its menu at the screen's top left;
+captures of MenuBarAgent's window and of the Window Server "Menubar" window
+come back empty, so only the screen shows item glyphs; each capture of the
+screen shows the purple capture dot for about 10 s; a click on our icon
+arrives without the modifier keys. Rabenko's macOS 27 branch of Ice keeps
+images on disk and photographs items by showing them for a moment, and
+clicks a drawn item where it is; ice-rust does the same within approach A.
+
+| Decision | Why |
+|---|---|
+| A catalog of which section each item is in, from every read taken while a section shows | Folded items have no position; the only time their section can be read is while it is laid out. |
+| Item ids from the bundle identifier instead of the process | The catalog outlives a relaunch of the app. |
+| Images captured only while Use Ice Bar is on or after search opened, only when missing or older than 30 minutes, at most every 5 s | Each capture shows the purple dot; menu bar mode needs no images. |
+| The bar cut out of each image (`glyph`) | The screen capture has the bar behind the glyph, which on the Ice Bar's fill showed as patches of wallpaper. |
+| Show a section for 700 ms to learn it when nothing is known, or when an app has more items than known | Without it an app that launched after ice-rust never appears in the Ice Bar. macOS posts no launch notification for apps without a Dock icon, so new apps are found by comparing running apps. |
+| A click shows the section and clicks the laid-out item, not AXPress | AXPress opens the menu at the top left corner; the shown item opens it in place, as on macOS 26. |
+| Hide app menus from folded items: known ones missing from a shown section, and listed folded ones not known to be in a hidden section | MenuBarAgent lists only some folded items; with every section shown any overflow means a fold. |
+| Use Ice Bar switched off once on macOS 27 | It was saved on (the default) while it did nothing there; turning it on would change every macOS 27 user's clicks. |
+| The icon also reads the modifier keys held now | The forwarded click lacks them, so Option-click acted as a click. |
+
+VM check (macOS 27.0.1, 1454 pt display, 2026-10-23), with a test app of
+seven status items, five seeded into the hidden section and two into the
+always-hidden one, each opening a menu that logs when it opens: first
+launch switched Use Ice Bar off and set the flag; with it on, launch took
+15 item images; a click on the icon opened the Ice Bar with the five
+glyphs on the fill; a click on a tile showed the hidden section and opened
+that item's menu under it in the menu bar; with ice-rust launched before
+the test app, the Ice Bar showed the hidden section for 0.7 s first and
+then the five items, and search showed every section once and listed all
+seven with images; Return on a hidden and an always-hidden item opened
+their menus in place; Option-click opened the always-hidden Ice Bar after
+the modifier fix (before, the hidden one); the dividers, app menus and
+auto rehide hotkeys flipped their settings and the menus; with four wide
+items in the hidden section and Use Ice Bar off, showing the section hid
+Finder's menus so every item showed, and hiding it brought them back.
+Another app's UI test was running in the same VM at the time.
+

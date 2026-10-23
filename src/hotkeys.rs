@@ -20,15 +20,24 @@ pub enum HotkeyAction {
     SearchMenuBarItems,
     /// Turns Use Ice Bar on or off.
     EnableIceBar,
+    /// Turns Show section dividers on or off.
+    ShowSectionDividers,
+    /// Hides or shows the frontmost app's menus.
+    ToggleApplicationMenus,
+    /// Turns Automatically rehide on or off; on Ice's roadmap.
+    EnableAutoRehide,
 }
 
 impl HotkeyAction {
-    /// In Ice's order.
-    pub const ALL: [HotkeyAction; 4] = [
+    /// In Ice's order, then Enable auto rehide.
+    pub const ALL: [HotkeyAction; 7] = [
         HotkeyAction::ToggleHiddenSection,
         HotkeyAction::ToggleAlwaysHiddenSection,
         HotkeyAction::SearchMenuBarItems,
         HotkeyAction::EnableIceBar,
+        HotkeyAction::ShowSectionDividers,
+        HotkeyAction::ToggleApplicationMenus,
+        HotkeyAction::EnableAutoRehide,
     ];
 
     pub fn key(self) -> &'static str {
@@ -37,6 +46,9 @@ impl HotkeyAction {
             HotkeyAction::ToggleAlwaysHiddenSection => "ToggleAlwaysHiddenSection",
             HotkeyAction::SearchMenuBarItems => "SearchMenuBarItems",
             HotkeyAction::EnableIceBar => "EnableIceBar",
+            HotkeyAction::ShowSectionDividers => "ShowSectionDividers",
+            HotkeyAction::ToggleApplicationMenus => "ToggleApplicationMenus",
+            HotkeyAction::EnableAutoRehide => "EnableAutoRehide",
         }
     }
 
@@ -50,6 +62,9 @@ impl HotkeyAction {
             HotkeyAction::ToggleAlwaysHiddenSection => "Toggle the always-hidden section",
             HotkeyAction::SearchMenuBarItems => "Search menu bar items",
             HotkeyAction::EnableIceBar => "Turn the Ice Bar on or off",
+            HotkeyAction::ShowSectionDividers => "Show or hide section dividers",
+            HotkeyAction::ToggleApplicationMenus => "Toggle app menus",
+            HotkeyAction::EnableAutoRehide => "Turn auto rehide on or off",
         }
     }
 
@@ -59,6 +74,9 @@ impl HotkeyAction {
             HotkeyAction::ToggleAlwaysHiddenSection => "Like an Option-click on the icon",
             HotkeyAction::SearchMenuBarItems => "Opens or closes the search panel",
             HotkeyAction::EnableIceBar => "Switches Use Ice Bar",
+            HotkeyAction::ShowSectionDividers => "Switches Show section dividers",
+            HotkeyAction::ToggleApplicationMenus => "Hides or shows the menus of the app in front",
+            HotkeyAction::EnableAutoRehide => "Switches Automatically rehide",
         }
     }
 
@@ -68,6 +86,9 @@ impl HotkeyAction {
             HotkeyAction::ToggleAlwaysHiddenSection => 1,
             HotkeyAction::SearchMenuBarItems => 2,
             HotkeyAction::EnableIceBar => 3,
+            HotkeyAction::ShowSectionDividers => 4,
+            HotkeyAction::ToggleApplicationMenus => 5,
+            HotkeyAction::EnableAutoRehide => 6,
         }
     }
 
@@ -261,6 +282,9 @@ fn action_phrase(action: HotkeyAction) -> &'static str {
         HotkeyAction::ToggleAlwaysHiddenSection => "toggle the always-hidden section",
         HotkeyAction::SearchMenuBarItems => "search menu bar items",
         HotkeyAction::EnableIceBar => "turn the Ice Bar on or off",
+        HotkeyAction::ShowSectionDividers => "show or hide section dividers",
+        HotkeyAction::ToggleApplicationMenus => "toggle app menus",
+        HotkeyAction::EnableAutoRehide => "turn auto rehide on or off",
     }
 }
 
@@ -372,12 +396,16 @@ mod tests {
             assert_eq!(HotkeyAction::from_id(action.id()), Some(action));
         }
         assert_eq!(HotkeyAction::from_id(0), None);
-        assert_eq!(HotkeyAction::from_id(5), None);
+        assert_eq!(HotkeyAction::from_id(8), None);
         assert_eq!(
             HotkeyAction::from_key("SearchMenuBarItems"),
             Some(HotkeyAction::SearchMenuBarItems)
         );
-        assert_eq!(HotkeyAction::from_key("ToggleApplicationMenus"), None);
+        assert_eq!(
+            HotkeyAction::from_key("ToggleApplicationMenus"),
+            Some(HotkeyAction::ToggleApplicationMenus)
+        );
+        assert_eq!(HotkeyAction::from_key("Bogus"), None);
     }
 
     #[test]

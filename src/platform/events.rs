@@ -611,6 +611,12 @@ pub fn click_item(
     )
 }
 
+/// Clicks at `at` (CG space) like `click_item`, for an item of the macOS
+/// 27 menu bar, which has no window of its own (v1.12).
+pub fn click_point(mtm: MainThreadMarker, at: (f64, f64)) -> Result<(), InputError> {
+    click_item(mtm, 0, &Rect::new(at.0, at.1, 0.0, 0.0))
+}
+
 /// Command-drags from `from` along `path` (CG space) at the HID tap: a
 /// mouse move to `from`, a Command left-mouse-down there, one Command
 /// dragged event per path point, and a left-mouse-up without flags at the

@@ -1200,6 +1200,7 @@ mod tests {
                 AgentSlot {
                     frame: Rect::new(401.0, 0.0, 44.0, 30.0),
                     pid: Some(1235),
+                    app: None,
                     name: Some("D15".into()),
                     identifier: None,
                     overflow_control: false,
@@ -1207,6 +1208,7 @@ mod tests {
                 AgentSlot {
                     frame: Rect::new(428.0, 1.0, 18.0, 27.0),
                     pid: Some(419),
+                    app: None,
                     name: Some("Show Hidden Menu Bar Items".into()),
                     identifier: None,
                     overflow_control: true,
@@ -1214,6 +1216,7 @@ mod tests {
                 AgentSlot {
                     frame: Rect::new(453.0, 0.0, 38.0, 30.0),
                     pid: Some(1235),
+                    app: None,
                     name: Some("D8".into()),
                     identifier: None,
                     overflow_control: false,

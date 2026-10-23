@@ -102,7 +102,9 @@ API in `docs/clean-room/smart-rehide/API.md`), `input_tag`, `worker`, `image_che
 embedded artwork), `menu_icon` (the icon styles), `triggers` (show on
 click, hover and scroll), `app_menus` (hide application menus),
 `item_names` (app names for the item tooltips), `search` (the search
-panel's matching and rows), and the defaults half of `settings`. The macOS glue is under `src/platform/` and
+panel's matching and rows), `agent_bar` and `agent_catalog` (the macOS 27
+menu bar and what each section holds), `glyph` (macOS 27 item images
+without the bar behind them), and the defaults half of `settings`. The macOS glue is under `src/platform/` and
 compiles only on macOS. The binary (`src/main.rs`) parses the command line
 and dispatches to the menu bar app, `probe` or `render-settings`.
 
@@ -249,8 +251,12 @@ the page title sits in the title bar area. The window is resizable down to
 bars stretch.
 
 - General: Menu bar icon and Custom image (v1.4, see
-  [Icon styles](#icon-styles-v14)), Launch at login and Automatically check
-  for updates (v1.3). Changes are saved and applied at once.
+  [Icon styles](#icon-styles-v14)), Show section dividers (v1.12, Ice's
+  `ShowSectionDividers` key; on by default, off turns a collapsed divider
+  into a blank variable-length item, 16 pt wide, since the sections are
+  found from it and at length 0 its window on macOS 26 is 0 x 0), Launch
+  at login and Automatically check for updates (v1.3). Changes are saved
+  and applied at once.
 - Hidden Items (v1.5): Use Ice Bar, Hide app menus (v1.6, enabled while
   Use Ice Bar is off), Show on click, Show on hover, Hover delay
   (0 to 1 s in tenths), Show on scroll, Automatically rehide with its
@@ -308,9 +314,14 @@ id, and one `InstallEventHandler` for hotkey presses, installed with the
 first hotkey (`platform::hotkeys`). Carbon hotkeys need no permission. The
 handler runs the action on the next pass of the run loop: the hidden
 section toggles like a click on the icon, the always-hidden section like an
-Option-click, search opens or closes the search panel, and Use Ice Bar
-flips like its switch (search and Use Ice Bar are ignored on macOS 27,
-with a log line). None is assigned by default.
+Option-click, search opens or closes the search panel, and Use Ice Bar,
+Show section dividers and Automatically rehide flip like their switches,
+shown on the open Settings page (v1.12). Toggle app menus hides the menus
+of the app in front as Hide app menus does, or shows them again; that
+hiding lasts until the hotkey, another app coming to the front or Settings
+opening ends it, whatever the sections do, and the hotkey does nothing
+while Settings is open. Enable auto rehide is on Ice's roadmap; its
+stored name is `EnableAutoRehide`. None is assigned by default.
 
 The hotkeys are stored under the defaults key `Hotkeys` as a JSON string,
 `{"ToggleHiddenSection": [keyCode, modifiers]}`, with Ice's action names
@@ -365,8 +376,8 @@ bar fill), and the Ice Bar closes it.
 - Escape, a click in another app or in another ice-rust window, a Space
   change and a display change close the panel. Command-X, C, V and A edit
   the field (the app has no Edit menu).
-- Not on macOS 27 yet: clicking needs item windows (the menu item is
-  hidden and the hotkey logs a line).
+- On macOS 27 the list comes from the items as last seen (see
+  [The macOS 27 Ice Bar and search](#the-macos-27-ice-bar-and-search-v112)).
 
 ## Moving items
 
@@ -868,11 +879,73 @@ window per display (`crate::agent_bar`, `platform/app/agent.rs`, research in
   `arrange::drop_point` next to the target (the hidden section's end is
   left of the spacer), read back after 500 ms with `model_matches`, up to
   `MOVE_RETRIES` drops; moves queue one at a time.
-- **Off:** the Ice Bar (sections show in the menu bar), search and Hide
-  app menus; their Settings controls say "Not available on macOS 27 yet",
-  and the menu hides Use Ice Bar and Search Menu Bar Items....
+- **Ice Bar, search and Hide app menus** from v1.12, see the next
+  section. Before, all three were off on macOS 27.
+- **Option-click.** A click on the icon reaches ice-rust through
+  MenuBarAgent without the keys held (27.0.1), so the icon also reads the
+  modifier keys held at that moment (`NSEvent.modifierFlags`). Before
+  v1.12 an Option-click on macOS 27 acted as a plain click.
 - **Probe.** `agent_slots` in the JSON (x, y, width, height, pid, name,
   overflow_control, folded) and a slot table in the text report.
+
+## The macOS 27 Ice Bar and search (v1.12)
+
+Hidden items on macOS 27 are folded into MenuBarAgent's overflow, with no
+place, frame or image to read (VM findings in [macos27.md](macos27.md)).
+`platform/app/agent_items.rs` works from what earlier reads saw:
+
+- **Ids.** `slot_ids` hashes the item's bundle identifier (or process
+  without one), its identifier or name and an ordinal, so an item keeps
+  its id when its app relaunches.
+- **Catalog** (`agent_catalog`). Every read of MenuBarAgent's bar
+  (`read_agent_bar`) taken at least 400 ms after our last length change
+  goes in: for each section the menu bar state shows, the items read are
+  its items now. Without an overflow control nothing was folded and the
+  section is replaced; with one, unseen items of the section stay, left of
+  those read (folding starts at the left). An item seen in one section
+  leaves the others. Items of apps that quit are dropped when the Ice Bar
+  or search opens; an app that relaunched is found again by its bundle
+  identifier.
+- **Images.** While Use Ice Bar is on, or once search has opened, a read
+  in which an item of a shown section has no image, or one older than 30
+  minutes, captures the screen over the menu bar once (at most every 5 s)
+  and crops every item of the shown sections from it
+  (`capture::capture_glyphs_bounded`). MenuBarAgent's window and the
+  Window Server "Menubar" window capture empty, so only the screen shows
+  the glyphs, over the bar. `glyph` cuts the bar away: each row's
+  background is blended from the tile's two edge columns, coverage is how
+  far a pixel's brightness moved from it toward the glyph's tone (white or
+  black, decided over all tiles of the capture), and the premultiplied
+  color is the pixel minus that much background. Each capture of the
+  screen makes macOS show its purple capture dot for about 10 s.
+- **Learning.** When the Ice Bar opens on a section with no known items,
+  that section shows in the menu bar for 700 ms, is read, and hides before
+  the bar opens. When an app has more items in its extras menu bar (which
+  lists folded items too) than the catalog knows, every section shows
+  that way first; this covers apps that launched since every section was
+  last read, found by comparing the running apps with those at that read,
+  since macOS posts no launch notification for apps without a Dock icon.
+  The same section is not shown this way again within 60 s.
+- **Ice Bar.** The section's items as last seen, each with its image,
+  else its app's icon (18 pt), else its name; the fill contrasts with the
+  last capture's glyph tone.
+- **Click.** The bar closes, the item's section shows, and every 100 ms
+  the bar is read until the item's slot is on the bar at the same place in
+  two reads; then one click goes to its center (`events::click_point`),
+  within 2 s. Accessibility's AXPress on a folded item opens its menu at
+  the screen's top left corner (its folded frame), so it is not used.
+- **Search.** Opens like the Ice Bar (learning first when needed) and
+  lists the catalog as a `BarModel`, with the visible section read when it
+  opens.
+- **Hide app menus.** While a hidden section shows, the menus hide when an
+  item known to be in a shown hidden section is not on the bar, or a
+  folded item MenuBarAgent lists is not known to be in a section that is
+  not shown; with every section shown, when the overflow control is there.
+  MenuBarAgent lists only some folded items (those that would fit where the
+  app menus are), so a section it folds unseen keeps the menus.
+- **Use Ice Bar** starts off on macOS 27: earlier versions saved it on
+  without running the Ice Bar there, so the first launch of v1.12 on macOS
+  27 switches it off once and sets `IceBarMacOS27V1`.
 
 ## Limitations and differences from Ice
 

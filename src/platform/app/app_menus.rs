@@ -33,6 +33,10 @@ const CHECKS: [Duration; 2] = [Duration::from_millis(200), Duration::from_millis
 pub(super) struct AppMenus {
     /// ice-rust is the active app with its menus hidden.
     hiding: Cell<bool>,
+    /// The hiding came from the Toggle app menus hotkey (v1.12), so it
+    /// lasts until the hotkey or another app ends it, whatever the
+    /// sections do.
+    by_hand: Cell<bool>,
     /// The app that was in front when hiding began; it gets focus back.
     previous: RefCell<Option<Retained<NSRunningApplication>>>,
     timers: RefCell<Vec<Retained<NSTimer>>>,
@@ -77,6 +81,9 @@ impl Controller {
     }
 
     fn check_app_menus(&self) {
+        if self.app_menus.by_hand.get() {
+            return;
+        }
         let enabled = self.settings.borrow().hide_app_menus;
         let use_ice_bar = self.use_ice_bar();
         let mut situation = MenuSituation {
@@ -108,6 +115,9 @@ impl Controller {
     /// with a notch the menus must also continue right of it. `None` when
     /// the menus or the dividers cannot be read.
     fn items_reach_app_menus(&self) -> Option<bool> {
+        if self.agent_menu_bar {
+            return self.agent_items_reach_app_menus();
+        }
         let on_screen = windows::list_on_screen();
         let place = self.menu_bar_place(&on_screen, events::pointer_location())?;
         let b = place.display.bounds;
@@ -184,10 +194,33 @@ impl Controller {
         });
     }
 
+    /// The Toggle app menus hotkey, like Ice's: hides the menus of the app
+    /// in front, or shows them again. Not while Settings is open, since
+    /// ice-rust is in front with its own menus then.
+    pub(super) fn toggle_app_menus(&self) {
+        if self.app_menus.hiding.get() {
+            self.restore_app_menus(true);
+            self.schedule_app_menu_check();
+            return;
+        }
+        let settings_open = self
+            .settings_window
+            .borrow()
+            .as_ref()
+            .is_some_and(|w| w.is_visible());
+        if settings_open {
+            eprintln!("ice-rust: app menus stay while Settings is open");
+            return;
+        }
+        self.app_menus.by_hand.set(true);
+        self.hide_app_menus();
+    }
+
     /// Shows the app menus again: ice-rust's own menus come back, it returns
     /// to an accessory app and, with `refocus`, hands focus back to the app
     /// that was in front. Without `refocus` the user has already moved on.
     pub(super) fn restore_app_menus(&self, refocus: bool) {
+        self.app_menus.by_hand.set(false);
         if !self.app_menus.hiding.replace(false) {
             return;
         }
@@ -209,6 +242,7 @@ impl Controller {
     /// regular app for the window, with its menus back, and Settings gives
     /// focus back to the app that was in front before the hiding began.
     pub(super) fn hand_app_menus_to_settings(&self) {
+        self.app_menus.by_hand.set(false);
         if !self.app_menus.hiding.replace(false) {
             return;
         }
