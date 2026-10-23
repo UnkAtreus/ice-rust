@@ -963,8 +963,11 @@ MenuBarAgent's own items (Clock, Control Center, Wi-Fi) kept their width
 even after MenuBarAgent restarted.
 
 - **Apply** finds the apps with items (each app's extras menu bar,
-  checked on a helper thread), then asks: Apply and Relaunch, Apply Only
-  or Cancel, naming the apps. Both write `16 + offset` to both keys, or
+  checked on a helper thread), then asks, naming the apps: Apply Only (the
+  default button, Return), Apply and Relaunch (marked destructive, no key)
+  or Cancel (Escape). Only those two buttons' responses act; any other
+  response, such as a modal session that ends without a button, cancels.
+  Both write `16 + offset` to both keys, or
   remove them for 0 (`CFPreferencesSetValue` in the current host's global
   domain). Apply and Relaunch quits each app (`terminate`, forced after 1
   s), waits 0.5 s for one that launchd brings back, and opens the others

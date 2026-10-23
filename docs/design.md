@@ -1407,6 +1407,7 @@ Control Center last, itself never.
 |---|---|
 | The slider starts at the stored spacing, not at a setting of our own | The keys are what apps read; a copy in our defaults could disagree with them. |
 | Ask first, name the apps, and offer Apply Only | On the development Mac the list held the terminal app hosting the session, three VPN apps and DisplayLink Manager; quitting them unasked costs connections and displays. Apply Only lets each app take the spacing when it next opens. |
+| Apply Only is the default button; Apply and Relaunch takes a click; only the two buttons' exact responses act | In a VM test the first version ran Apply and Relaunch with no visible dialog: it was the first button (Return), and every response other than the second and third buttons counted as it. The cause of the answer was not found, so the mapping no longer trusts anything else and Return quits nothing. |
 | Find the apps through their extras menu bars on a helper thread | The window list names Control Center as every item's owner on macOS 26; the first Accessibility pass over all apps takes about 1.4 s. |
 | Keys through `CFPreferencesSetValue`, not the `defaults` tool | No child process; the same domain. |
 | Reopen ice-rust last | Its own items take the spacing only after a restart, and on macOS 27 the length cap must use the chrome its items have. |
@@ -1420,4 +1421,9 @@ instead of 33 and 32; with the keys removed and another relaunch they were
 the new build hid the sections with the divider at 693 pt (a 725 pt slot on
 a 1454 pt display) and the icon in a 50 pt slot. The full Apply and
 Relaunch was not run on the development Mac, since it would have quit the
-app hosting the session.
+app hosting the session. In the VM, from the Settings page: Escape on the
+dialog answered 1002 and wrote nothing; Return answered 1000 (Apply Only),
+wrote 6 to both keys and quit nothing; a click on Apply and Relaunch
+answered 1001, quit and reopened Siri and TextInputMenuAgent (new
+processes) and then ice-rust itself, one instance throughout; Reset with
+Apply and Relaunch removed the keys the same way.

@@ -324,7 +324,7 @@ struct SpacingParts {
 /// dividers and system groups.
 const SPACING_TOP: f64 = 8.0 + 2.0 * ROW + 16.0 + ROW + 16.0 + 2.0 * ROW + 16.0;
 /// The spacing group's note while nothing runs.
-const SPACING_NOTE: &str = "Apply quits and reopens the apps with menu bar items";
+const SPACING_NOTE: &str = "Apply saves it, and can reopen the apps with items";
 
 struct PermissionRow {
     granted_icon: Option<Retained<NSImageView>>,

@@ -82,9 +82,9 @@ it (see [Differences from Ice](#differences-from-ice)).
   icon and name. Type to filter, then press Return or double-click to click
   the item; a hidden item is shown first.
 - **Menu bar item spacing.** Tighten or widen the space around every
-  menu bar item, as in Ice. Applying it quits and reopens the apps with
-  items in the menu bar (after asking), or only saves it for when each app
-  next opens.
+  menu bar item, as in Ice. Applying it saves it for when each app next
+  opens, or, if you choose, quits and reopens the apps with items in the
+  menu bar now.
 - **Global hotkeys.** Set shortcuts on the Hotkeys page to toggle the
   hidden section, the always-hidden section, the Ice Bar, the section
   dividers, the app's menus or auto-rehide, or to open the search panel,
@@ -139,7 +139,7 @@ of this repository.
 | Drag and drop interface to arrange individual items | Yes | Yes | Moves on-screen items only: the sections involved are revealed first. |
 | Display hidden items in a separate bar (Ice Bar) | Yes | Yes | Clicking an image reveals the whole section, then clicks the real item. Scrolls sideways when wider than the display. On macOS 27 the images are taken while the items show in the menu bar. |
 | Search menu bar items | Yes | Yes | Matches the start of a name, a word in it, a part of it or its letters in order; Ice also forgives typos. |
-| Menu bar item spacing | Yes (beta) | Yes | On the General page, -16 to +16 pt. Apply and Relaunch quits and reopens the apps with menu bar items, as Ice does; Apply Only saves it for when each app next opens. |
+| Menu bar item spacing | Yes (beta) | Yes | On the General page, -16 to +16 pt. Apply Only (the default button) saves it for when each app next opens; Apply and Relaunch quits and reopens the apps with menu bar items, as Ice does. |
 | Profiles for menu bar layout | Roadmap | No | |
 | Individual spacer items | Roadmap | No | |
 | Menu bar item groups | Roadmap | No | |

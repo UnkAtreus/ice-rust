@@ -7,12 +7,14 @@
 use std::cell::Cell;
 use std::time::Duration;
 
-use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication};
+use objc2_app_kit::{
+    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSModalResponse,
+};
 use objc2_foundation::NSString;
 
 use super::Controller;
 use crate::platform::{installer, spacing, timer};
-use crate::spacing::{ItemApp, offset_from_spacing};
+use crate::spacing::{ItemApp, SpacingChoice, offset_from_spacing, spacing_choice};
 
 /// Time for the reopened apps to put their items back before ice-rust
 /// quits and reopens.
@@ -50,18 +52,33 @@ impl Controller {
         });
     }
 
-    /// Shows an alert; returns which button was pressed, from 0.
-    fn alert(&self, message: &str, info: &str, buttons: &[&str]) -> isize {
+    /// Shows an alert and returns its response. The first button answers
+    /// Return, a "Cancel" button Escape; `destructive` marks the second
+    /// button, which then has no key.
+    fn alert(
+        &self,
+        message: &str,
+        info: &str,
+        buttons: &[&str],
+        destructive: bool,
+    ) -> NSModalResponse {
         let app = NSApplication::sharedApplication(self.mtm);
         app.activate();
         let alert = NSAlert::new(self.mtm);
         alert.setAlertStyle(NSAlertStyle::Warning);
         alert.setMessageText(&NSString::from_str(message));
         alert.setInformativeText(&NSString::from_str(info));
-        for button in buttons {
-            alert.addButtonWithTitle(&NSString::from_str(button));
+        for (i, title) in buttons.iter().enumerate() {
+            let button = alert.addButtonWithTitle(&NSString::from_str(title));
+            if i == 1 && destructive {
+                button.setHasDestructiveAction(true);
+                button.setKeyEquivalent(&NSString::new());
+            }
+            if *title == "Cancel" {
+                button.setKeyEquivalent(&NSString::from_str("\u{1b}"));
+            }
         }
-        alert.runModal() - NSAlertFirstButtonReturn
+        alert.runModal()
     }
 
     fn confirm_item_spacing(&self, offset: i64, apps: Vec<ItemApp>, finished: Box<dyn Fn(bool)>) {
@@ -72,32 +89,36 @@ impl Controller {
         }
         names.push("ice-rust".to_string());
         let info = format!(
-            "Apply and Relaunch quits and opens again {} so their items take the new \
-             spacing. An app that does not quit within a second is forced to quit, so \
-             save your work in them first, and VPN or display apps among them drop \
-             their connections for a moment. Apply Only saves the spacing; each app \
-             takes it when it next opens, or after you log out and back in.",
+            "Apply Only saves the spacing; each app takes it when it next opens, or \
+             after you log out and back in. Apply and Relaunch also quits and opens \
+             again {} so their items take it now. An app that does not quit within a \
+             second is forced to quit, so save your work in them first, and VPN or \
+             display apps among them drop their connections for a moment.",
             name_list(&names)
         );
-        let choice = self.alert(
+        let response = self.alert(
             "Apply menu bar item spacing?",
             &info,
-            &["Apply and Relaunch", "Apply Only", "Cancel"],
+            &["Apply Only", "Apply and Relaunch", "Cancel"],
+            true,
         );
-        if choice > 1 {
+        let choice = spacing_choice(response, NSAlertFirstButtonReturn);
+        eprintln!("ice-rust: item spacing dialog answered {response} ({choice:?})");
+        if choice == SpacingChoice::Cancel {
             finished(false);
             return;
         }
         if !spacing::write_offset(offset) {
-            let _ = self.alert(
+            self.alert(
                 "The item spacing could not be saved",
                 "macOS did not store the new spacing; nothing was changed.",
                 &["OK"],
+                false,
             );
             finished(false);
             return;
         }
-        if choice == 1 {
+        if choice == SpacingChoice::SaveOnly {
             eprintln!("ice-rust: item spacing offset {offset} saved; apps take it when they open");
             finished(false);
             return;
@@ -113,7 +134,7 @@ impl Controller {
                 return;
             };
             if !failed.is_empty() {
-                let _ = c.alert(
+                c.alert(
                     "Some apps did not open again",
                     &format!(
                         "{} did not quit or could not be opened again. Quit and open \
@@ -121,6 +142,7 @@ impl Controller {
                         name_list(&failed)
                     ),
                     &["OK"],
+                    false,
                 );
             }
             let finished = finished.take();

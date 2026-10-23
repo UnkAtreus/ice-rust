@@ -68,6 +68,31 @@ pub fn item_chrome(spacing: Option<f64>) -> f64 {
         .unwrap_or(DEFAULT_SPACING as f64)
 }
 
+/// What the Apply dialog's answer means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpacingChoice {
+    /// Apply Only, the first button, which Return presses: it quits
+    /// nothing.
+    SaveOnly,
+    /// Apply and Relaunch, the second button, which only a click presses.
+    Relaunch,
+    Cancel,
+}
+
+/// The choice for the dialog's `response`, where `first` is the first
+/// button's response code. Only the two buttons themselves act; anything
+/// else (Cancel, Escape, or a modal session that ended without a button)
+/// changes nothing.
+pub fn spacing_choice(response: isize, first: isize) -> SpacingChoice {
+    if response == first {
+        SpacingChoice::SaveOnly
+    } else if response == first + 1 {
+        SpacingChoice::Relaunch
+    } else {
+        SpacingChoice::Cancel
+    }
+}
+
 /// An app with a menu bar item.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ItemApp {
@@ -128,6 +153,17 @@ mod tests {
         assert_eq!(offset_from_spacing(Some(8.0)), -8);
         assert_eq!(offset_from_spacing(Some(5.0)), -12);
         assert_eq!(offset_from_spacing(Some(100.0)), 16);
+    }
+
+    #[test]
+    fn only_the_two_buttons_act() {
+        // NSAlertFirstButtonReturn is 1000; NSModalResponseStop -1000 and
+        // NSModalResponseAbort -1001 end a session without a button.
+        assert_eq!(spacing_choice(1000, 1000), SpacingChoice::SaveOnly);
+        assert_eq!(spacing_choice(1001, 1000), SpacingChoice::Relaunch);
+        for response in [1002, -1000, -1001, -1002, 0] {
+            assert_eq!(spacing_choice(response, 1000), SpacingChoice::Cancel);
+        }
     }
 
     #[test]
