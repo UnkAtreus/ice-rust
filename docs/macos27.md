@@ -186,6 +186,16 @@ in the always-hidden one. The display was 1454 pt wide by then.
   `NSWorkspaceDidLaunchApplicationNotification`; the test app's launch
   was not seen.
 
+### Experiment: item spacing (VM, 2026-10-23)
+
+With `NSStatusItemSpacing` in the current host's global defaults set and
+the test app relaunched, its slots were the glyph plus the spacing wide:
+33 pt at the default 16, 21 at 4, 29 at 12, 49 at 32
+(`NSStatusItemSelectionPadding` stayed 8). No MenuBarAgent restart was
+needed; restarting it (launchd brings it back at once) did not change the
+width of its own items. Our dividers' chrome follows the spacing too, so
+the length cap uses it (see technical.md).
+
 ## Approaches other projects use
 
 **A. Size the divider so the system overflow hides items** (public APIs plus

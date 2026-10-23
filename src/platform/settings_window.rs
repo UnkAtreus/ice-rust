@@ -99,6 +99,11 @@ pub trait SettingsHost {
     fn check_for_updates(&self);
     /// The About page's update status line.
     fn update_status_line(&self) -> String;
+    /// The menu bar item spacing offset stored now (v1.13).
+    fn item_spacing(&self) -> i64;
+    /// Applies an item spacing offset after asking; `finished` gets false
+    /// when nothing changed, so the controls can be used again.
+    fn apply_item_spacing(&self, offset: i64, finished: Box<dyn Fn(bool)>);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -306,6 +311,21 @@ struct GeneralParts {
     auto_updates: Retained<NSSwitch>,
 }
 
+/// The Menu bar item spacing group (v1.13).
+struct SpacingParts {
+    slider: Retained<NSSlider>,
+    value: Retained<NSTextField>,
+    apply: Retained<NSButton>,
+    reset: Retained<NSButton>,
+    note: Retained<NSTextField>,
+}
+
+/// Where the spacing group starts on the General page: below the icon,
+/// dividers and system groups.
+const SPACING_TOP: f64 = 8.0 + 2.0 * ROW + 16.0 + ROW + 16.0 + 2.0 * ROW + 16.0;
+/// The spacing group's note while nothing runs.
+const SPACING_NOTE: &str = "Apply quits and reopens the apps with menu bar items";
+
 struct PermissionRow {
     granted_icon: Option<Retained<NSImageView>>,
     missing_icon: Option<Retained<NSImageView>>,
@@ -331,6 +351,8 @@ pub struct SettingsWindow {
     pages: Vec<(Page, Retained<FlippedView>)>,
     current: Cell<Page>,
     general: GeneralParts,
+    /// Menu bar item spacing on the General page (v1.13).
+    spacing: SpacingParts,
     canvas: Retained<LayoutCanvas>,
     spinner: Retained<NSProgressIndicator>,
     permission_rows: Vec<(Permission, PermissionRow)>,
@@ -492,6 +514,14 @@ impl SettingsWindow {
                 me,
                 &mut targets,
             );
+            let spacing = build_spacing_group(
+                mtm,
+                &general_view,
+                SPACING_TOP,
+                page_width,
+                me,
+                &mut targets,
+            );
 
             // Menu Bar Layout.
             let layout_view = FlippedView::new(mtm, page_frame);
@@ -558,6 +588,7 @@ impl SettingsWindow {
                 pages,
                 current: Cell::new(Page::General),
                 general,
+                spacing,
                 canvas,
                 spinner,
                 permission_rows,
@@ -617,6 +648,65 @@ impl SettingsWindow {
     /// Hidden Items pages.
     pub fn show_settings(&self) {
         self.sync_general();
+    }
+
+    /// Shows the stored item spacing, with nothing to apply.
+    fn sync_spacing(&self) {
+        let current = self.host.item_spacing();
+        let s = &self.spacing;
+        s.slider.setDoubleValue(current as f64);
+        s.value
+            .setStringValue(&NSString::from_str(&crate::spacing::offset_label(current)));
+        s.slider.setEnabled(true);
+        s.apply.setEnabled(false);
+        s.reset.setEnabled(current != 0);
+        s.note.setStringValue(&NSString::from_str(SPACING_NOTE));
+    }
+
+    fn spacing_offset(&self) -> i64 {
+        crate::spacing::offset_from_slider(self.spacing.slider.doubleValue())
+    }
+
+    fn spacing_changed(&self) {
+        let offset = self.spacing_offset();
+        self.spacing
+            .value
+            .setStringValue(&NSString::from_str(&crate::spacing::offset_label(offset)));
+        self.spacing
+            .apply
+            .setEnabled(offset != self.host.item_spacing());
+    }
+
+    fn reset_spacing(&self) {
+        self.spacing.slider.setDoubleValue(0.0);
+        self.spacing_changed();
+        self.apply_spacing();
+    }
+
+    fn apply_spacing(&self) {
+        let offset = self.spacing_offset();
+        let s = &self.spacing;
+        for control in [&*s.slider as &NSControl, &s.apply, &s.reset] {
+            control.setEnabled(false);
+        }
+        s.note.setStringValue(&NSString::from_str(
+            "Finding the apps with menu bar items...",
+        ));
+        let me = self.me.clone();
+        self.host.apply_item_spacing(
+            offset,
+            Box::new(move |changed| {
+                if let Some(w) = me.upgrade() {
+                    if changed {
+                        w.spacing
+                            .note
+                            .setStringValue(&NSString::from_str("Applied; ice-rust opens again"));
+                    } else {
+                        w.sync_spacing();
+                    }
+                }
+            }),
+        );
     }
 
     pub fn is_visible(&self) -> bool {
@@ -729,6 +819,7 @@ impl SettingsWindow {
             .setState(switch_state(s.auto_check_updates));
         self.sync_icon();
         self.sync_login();
+        self.sync_spacing();
     }
 
     /// Shows the stored icon style and tint, and the custom image in the
@@ -1669,6 +1760,80 @@ fn build_general(
         login_note,
         login_button,
         auto_updates,
+    }
+}
+
+/// The Menu bar item spacing group (v1.13): a slider from -16 to +16 in
+/// steps of 2 with its value, and Reset and Apply, which act only after the
+/// app asks (`SettingsHost::apply_item_spacing`).
+fn build_spacing_group(
+    mtm: MainThreadMarker,
+    page: &NSView,
+    top: f64,
+    width: f64,
+    me: &Weak<SettingsWindow>,
+    targets: &mut Vec<Retained<ActionTarget>>,
+) -> SpacingParts {
+    use crate::spacing::{MAX_OFFSET, MIN_OFFSET, OFFSET_STEP, offset_label};
+    let group = RoundedBox::new(mtm, rect(MARGIN, top, width, 2.0 * ROW), BoxStyle::Group);
+    add(page, &group, Follow::Width);
+    let (slider, value) = slider_row(
+        mtm,
+        &group,
+        (
+            "Menu bar item spacing",
+            "The space around each item in the menu bar",
+        ),
+        0.0,
+        width,
+        (0.0, MIN_OFFSET as f64, MAX_OFFSET as f64),
+        &offset_label(0),
+    );
+    slider.setNumberOfTickMarks(((MAX_OFFSET - MIN_OFFSET) / OFFSET_STEP + 1) as isize);
+    slider.setAllowsTickMarkValuesOnly(true);
+    // Room for "Default" next to the slider.
+    slider.setFrame(rect(width - 246.0, 18.0, 150.0, 20.0));
+    value.setFrame(rect(width - 88.0, 19.0, 74.0, 17.0));
+    separator(mtm, &group, ROW, width);
+    let note = label(
+        mtm,
+        SPACING_NOTE,
+        rect(16.0, ROW + 20.0, width - 260.0, 15.0),
+        11.0,
+        Weight::Regular,
+        &NSColor::secondaryLabelColor(),
+    );
+    add(&group, &note, Follow::Width);
+    // SAFETY: no target or action yet; `attach` below sets both.
+    let (reset, apply) = unsafe {
+        (
+            NSButton::buttonWithTitle_target_action(&NSString::from_str("Reset"), None, None, mtm),
+            NSButton::buttonWithTitle_target_action(&NSString::from_str("Apply"), None, None, mtm),
+        )
+    };
+    reset.setFrame(rect(width - 216.0, ROW + 13.0, 90.0, 30.0));
+    apply.setFrame(rect(width - 116.0, ROW + 13.0, 100.0, 30.0));
+    add(&group, &reset, Follow::Right);
+    add(&group, &apply, Follow::Right);
+    let mut attach = |control: &NSControl, action: fn(&SettingsWindow)| {
+        let me = me.clone();
+        let target = ActionTarget::new(mtm, move |_| {
+            if let Some(w) = me.upgrade() {
+                action(&w);
+            }
+        });
+        target.attach(control);
+        targets.push(target);
+    };
+    attach(&slider, SettingsWindow::spacing_changed);
+    attach(&apply, SettingsWindow::apply_spacing);
+    attach(&reset, SettingsWindow::reset_spacing);
+    SpacingParts {
+        slider,
+        value,
+        apply,
+        reset,
+        note,
     }
 }
 

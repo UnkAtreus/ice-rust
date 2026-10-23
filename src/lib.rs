@@ -24,6 +24,7 @@ pub mod rehide_policy;
 pub mod search;
 pub mod sections;
 pub mod settings;
+pub mod spacing;
 pub mod triggers;
 pub mod update;
 pub mod worker;

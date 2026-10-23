@@ -69,6 +69,7 @@ mod agent_layout;
 mod app_menus;
 mod hotkeys;
 mod rehide_policy;
+mod spacing;
 mod triggers;
 use agent::Agent;
 use agent_items::AgentItems;
@@ -283,6 +284,17 @@ impl SettingsHost for Host {
         self.0
             .upgrade()
             .map_or_else(String::new, |c| c.updater.status_line())
+    }
+
+    fn item_spacing(&self) -> i64 {
+        self.0.upgrade().map_or(0, |c| c.item_spacing())
+    }
+
+    fn apply_item_spacing(&self, offset: i64, finished: Box<dyn Fn(bool)>) {
+        match self.0.upgrade() {
+            Some(c) => c.apply_item_spacing(offset, finished),
+            None => finished(false),
+        }
     }
 }
 

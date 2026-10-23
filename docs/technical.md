@@ -947,10 +947,44 @@ place, frame or image to read (VM findings in [macos27.md](macos27.md)).
   without running the Ice Bar there, so the first launch of v1.12 on macOS
   27 switches it off once and sets `IceBarMacOS27V1`.
 
+## Menu bar item spacing (v1.13)
+
+Like Ice's (`MenuBarItemSpacingManager`, beta there): AppKit leaves
+`NSStatusItemSpacing` around each status item, read by each app when it
+starts from the current host's global defaults, 16 when not set. The
+General page's slider offers Ice's offsets, -16 to +16 in steps of 2
+(None, Default, Max at the ends and the middle), and starts at the stored
+value. Measured with a test app: an item is its content plus
+`NSStatusItemSpacing` wide (33 pt at the default, 25 at 8, 49 at 32), on
+macOS 26.7.1 and 27.0.1; `NSStatusItemSelectionPadding` did not change the
+width. Relaunching the app is enough on both: on macOS 26 Control Center
+owns the item windows but the width follows the app, and on macOS 27
+MenuBarAgent's own items (Clock, Control Center, Wi-Fi) kept their width
+even after MenuBarAgent restarted.
+
+- **Apply** finds the apps with items (each app's extras menu bar,
+  checked on a helper thread), then asks: Apply and Relaunch, Apply Only
+  or Cancel, naming the apps. Both write `16 + offset` to both keys, or
+  remove them for 0 (`CFPreferencesSetValue` in the current host's global
+  domain). Apply and Relaunch quits each app (`terminate`, forced after 1
+  s), waits 0.5 s for one that launchd brings back, and opens the others
+  again without activating them; Control Center quits last and reopens
+  itself; MenuBarAgent is left alone. Apps that did not quit or could not
+  be opened are named in an alert. ice-rust then reopens itself (the
+  updater's relaunch helper), so its own items take the spacing too.
+- **macOS 27 length cap.** A divider must stay within half the display
+  including its item chrome, which is the spacing this process started
+  with (`spacing::launch_chrome`), not a fixed 16 pt: with spacing 32 the
+  divider is 693 pt in a 725 pt slot on a 1454 pt display.
+- Apps opened again lose any launch arguments, as in Ice.
+
 ## Limitations and differences from Ice
 
 - Out of scope: menu bar appearance. The Settings window has no
   Appearance or Updates pages.
+- Item spacing asks before it quits apps, names them, and offers Apply
+  Only; Ice relaunches them at once. Ice skips itself; ice-rust reopens
+  itself last.
 - Search matches names by their start, a word in them, a part of them or
   their letters in order; Ice's fuzzy search also forgives typos. The
   search panel's images are captured when it opens and not refreshed while

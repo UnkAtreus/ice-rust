@@ -18,6 +18,7 @@ pub mod permissions;
 pub mod render;
 pub mod search_panel;
 pub mod settings_window;
+pub mod spacing;
 pub mod status;
 pub mod timer;
 pub mod ui;

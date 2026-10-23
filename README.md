@@ -81,12 +81,16 @@ it (see [Differences from Ice](#differences-from-ice)).
   hotkey, opens a panel that lists every item by section with its app's
   icon and name. Type to filter, then press Return or double-click to click
   the item; a hidden item is shown first.
+- **Menu bar item spacing.** Tighten or widen the space around every
+  menu bar item, as in Ice. Applying it quits and reopens the apps with
+  items in the menu bar (after asking), or only saves it for when each app
+  next opens.
 - **Global hotkeys.** Set shortcuts on the Hotkeys page to toggle the
   hidden section, the always-hidden section, the Ice Bar, the section
   dividers, the app's menus or auto-rehide, or to open the search panel,
   from any app. None is set by default, and they need no permission.
 - **Settings window.** A General page (icon, section dividers, launch at
-  login, updates), a
+  login, updates, item spacing), a
   Hidden Items page (Ice Bar, show on click, hover and scroll, rehide), a
   Menu Bar Layout page where you drag items between the Visible, Hidden and
   Always-Hidden bars to move the real items, a Hotkeys page, a Permissions
@@ -135,7 +139,7 @@ of this repository.
 | Drag and drop interface to arrange individual items | Yes | Yes | Moves on-screen items only: the sections involved are revealed first. |
 | Display hidden items in a separate bar (Ice Bar) | Yes | Yes | Clicking an image reveals the whole section, then clicks the real item. Scrolls sideways when wider than the display. On macOS 27 the images are taken while the items show in the menu bar. |
 | Search menu bar items | Yes | Yes | Matches the start of a name, a word in it, a part of it or its letters in order; Ice also forgives typos. |
-| Menu bar item spacing | Yes (beta) | No | |
+| Menu bar item spacing | Yes (beta) | Yes | On the General page, -16 to +16 pt. Apply and Relaunch quits and reopens the apps with menu bar items, as Ice does; Apply Only saves it for when each app next opens. |
 | Profiles for menu bar layout | Roadmap | No | |
 | Individual spacer items | Roadmap | No | |
 | Menu bar item groups | Roadmap | No | |

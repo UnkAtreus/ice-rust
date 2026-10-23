@@ -107,6 +107,14 @@ impl SettingsHost for RenderHost {
     fn update_status_line(&self) -> String {
         "Not checked for updates yet".into()
     }
+
+    fn item_spacing(&self) -> i64 {
+        0
+    }
+
+    fn apply_item_spacing(&self, _offset: i64, finished: Box<dyn Fn(bool)>) {
+        finished(false);
+    }
 }
 
 /// Renders `options.page` to `options.out`.

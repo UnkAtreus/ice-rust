@@ -19,7 +19,9 @@ use crate::sections::MenuBarState;
 
 /// The first macOS major version with this menu bar.
 pub const AGENT_MENU_BAR_OS: u32 = 27;
-/// A status item's window is this much wider than its length.
+/// A status item's window is this much wider than its length with the
+/// default menu bar item spacing; `crate::spacing::item_chrome` gives it
+/// for another spacing.
 pub const ITEM_CHROME: f64 = 16.0;
 /// Kept off the exact half, so rounding cannot drop a divider.
 pub const CAP_MARGIN: f64 = 2.0;
@@ -412,16 +414,17 @@ pub fn uses_agent_menu_bar(os_major: u32) -> bool {
     os_major >= AGENT_MENU_BAR_OS
 }
 
-/// The longest divider length every display lays out: the item's window
-/// must stay within half the narrowest display (944 is laid out on a
-/// 1920 pt display and 950 dropped; 848 on 1728). `None` without displays.
-pub fn max_length(display_widths: &[f64]) -> Option<f64> {
+/// The longest divider length every display lays out: the item's window,
+/// its length plus `chrome`, must stay within half the narrowest display
+/// (944 is laid out on a 1920 pt display and 950 dropped; 848 on 1728).
+/// `None` without displays.
+pub fn max_length(display_widths: &[f64], chrome: f64) -> Option<f64> {
     let narrowest = display_widths
         .iter()
         .copied()
         .filter(|w| w.is_finite() && *w > 0.0)
         .reduce(f64::min)?;
-    Some(((narrowest / 2.0).floor() - ITEM_CHROME - CAP_MARGIN).max(0.0))
+    Some(((narrowest / 2.0).floor() - chrome - CAP_MARGIN).max(0.0))
 }
 
 /// The spacer's seed: directly left of the hidden divider's value. Values
@@ -486,9 +489,9 @@ pub fn collapsed_divider(frame: &Rect) -> bool {
     frame.width > 0.0 && frame.width <= MAX_COLLAPSED_WIDTH
 }
 
-/// Whether `frame` shows the spacer at length 0.
-pub fn collapsed_spacer(frame: &Rect) -> bool {
-    frame.width > 0.0 && frame.width <= ITEM_CHROME + ABUT_TOLERANCE
+/// Whether `frame` shows the spacer at length 0, `chrome` wide.
+pub fn collapsed_spacer(frame: &Rect, chrome: f64) -> bool {
+    frame.width > 0.0 && frame.width <= chrome + ABUT_TOLERANCE
 }
 
 /// Whether the spacer sits directly left of the hidden divider on the same
@@ -540,14 +543,19 @@ mod tests {
     #[test]
     fn max_length_stays_under_half_the_narrowest_display() {
         // VM, macOS 27.0.1: 944 laid out on 1920, 950 dropped.
-        assert_eq!(max_length(&[1920.0]), Some(942.0));
-        assert!(max_length(&[1920.0]).unwrap() + ITEM_CHROME <= 960.0);
+        let max = |widths: &[f64]| max_length(widths, ITEM_CHROME);
+        assert_eq!(max(&[1920.0]), Some(942.0));
+        assert!(max(&[1920.0]).unwrap() + ITEM_CHROME <= 960.0);
         // Stash: 848 hides on a 1728 pt display, 849 does not.
-        assert!(max_length(&[1728.0]).unwrap() <= 848.0);
+        assert!(max(&[1728.0]).unwrap() <= 848.0);
         // Two displays: the narrower one decides.
-        assert_eq!(max_length(&[2560.0, 1512.0]), max_length(&[1512.0]));
-        assert_eq!(max_length(&[]), None);
-        assert_eq!(max_length(&[f64::NAN, 0.0]), None);
+        assert_eq!(max(&[2560.0, 1512.0]), max(&[1512.0]));
+        assert_eq!(max(&[]), None);
+        assert_eq!(max(&[f64::NAN, 0.0]), None);
+        // With a wider item spacing the window is wider than its length by
+        // that much (VM, spacing 32: a 17 pt glyph in a 49 pt slot).
+        assert_eq!(max_length(&[1454.0], 32.0), Some(693.0));
+        assert!(max_length(&[1454.0], 32.0).unwrap() + 32.0 <= 727.0);
     }
 
     #[test]
@@ -889,8 +897,10 @@ mod tests {
         assert!(collapsed_divider(&Rect::new(1685.0, 0.0, 26.0, 30.0)));
         assert!(!collapsed_divider(&Rect::new(753.0, 0.0, 958.0, 30.0)));
         assert!(!collapsed_divider(&Rect::default()));
-        assert!(collapsed_spacer(&Rect::new(1669.0, 0.0, 16.0, 30.0)));
-        assert!(!collapsed_spacer(&Rect::new(150.0, 0.0, 958.0, 30.0)));
+        assert!(collapsed_spacer(&Rect::new(1669.0, 0.0, 16.0, 30.0), 16.0));
+        assert!(!collapsed_spacer(&Rect::new(150.0, 0.0, 958.0, 30.0), 16.0));
+        assert!(collapsed_spacer(&Rect::new(1669.0, 0.0, 8.0, 30.0), 8.0));
+        assert!(!collapsed_spacer(&Rect::new(1669.0, 0.0, 16.0, 30.0), 8.0));
     }
 
     #[test]

@@ -21,7 +21,7 @@ use crate::agent_bar::{
 use crate::arrange::{Destination, drag_path, drop_point, travel};
 use crate::geometry::{self, ControlOrder};
 use crate::model::{MOVE_DRAG_STEPS, MOVE_EVENT_INTERVAL, Rect};
-use crate::platform::{events, menu_bar_space, permissions, timer, windows};
+use crate::platform::{events, menu_bar_space, permissions, spacing, timer, windows};
 use crate::sections::MenuBarState;
 
 /// System Settings > Menu Bar on macOS 27, with Allow in the Menu Bar.
@@ -143,7 +143,7 @@ impl Controller {
             }
         }
         let widths: Vec<f64> = windows::displays().iter().map(|d| d.bounds.width).collect();
-        let max = agent_bar::max_length(&widths).unwrap_or_else(|| {
+        let max = agent_bar::max_length(&widths, spacing::launch_chrome()).unwrap_or_else(|| {
             applied = MenuBarState::AllShown;
             0.0
         });
@@ -396,7 +396,7 @@ impl Controller {
         ) else {
             return;
         };
-        if collapsed_spacer(&spacer) {
+        if collapsed_spacer(&spacer, spacing::launch_chrome()) {
             self.note_spacer(Spacer::Hidden, spacer_adjacent(&spacer, &hidden));
         }
     }
